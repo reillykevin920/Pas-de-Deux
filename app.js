@@ -12,6 +12,8 @@
   const ADDRESS_QUERY = 'https://gis.bouldercolorado.gov/ags_svr1/rest/services/plan/AddressPoints/MapServer/0/query';
   const BUILDING_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/pw/BuildingFootprints/MapServer/0/query';
   const STREET_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/trans/StreetsSimple/MapServer/0/query';
+  const CONE_ZONES_EXPERIENCE_ID = '45ea51935a18499281af2980bfa3b7e5';
+  const ARCGIS_ITEMS_ROOT = 'https://www.arcgis.com/sharing/rest/content/items';
 
   const VENUES = [
     { id:'boulder-theater', name:'Boulder Theater', addressNumber:'2032', street:'14th', address:'2032 14th St', uses:'Screenings' },
@@ -39,6 +41,10 @@
   let corridorLayer;
   let corridorPreviewLayer;
   let corridorEndpointLayer;
+  let coneZonesLayer;
+  let coneZonesLoaded = false;
+  let coneZonesLoading = null;
+  let coneZonesFeatureCount = 0;
   let currentPermitId = null;
   let currentCorridorId = null;
   let pendingCorridor = null;
@@ -83,7 +89,7 @@
   function cacheElements() {
     [
       'visibleCount','totalCount','unlocatedCount','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
-      'dataMenuBtn','dataMenu','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','fitAllBtn',
+      'dataMenuBtn','dataMenu','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','dateFrom','dateTo',
       'festivalWindowBtn','clearDatesBtn','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
@@ -95,9 +101,9 @@
 
   function initMap() {
     map = L.map('map', { zoomControl:true, preferCanvas:true }).setView(BOULDER_CENTER, 13);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      subdomains:'abcd', maxZoom:20,
-      attribution:'&copy; OpenStreetMap contributors &copy; CARTO'
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom:19,
+      attribution:'&copy; OpenStreetMap contributors'
     }).addTo(map);
 
     permitCluster = L.markerClusterGroup({ disableClusteringAtZoom:17, showCoverageOnHover:false, maxClusterRadius:44 });
@@ -107,6 +113,7 @@
     corridorLayer = L.layerGroup().addTo(map);
     corridorPreviewLayer = L.layerGroup().addTo(map);
     corridorEndpointLayer = L.layerGroup().addTo(map);
+    coneZonesLayer = L.featureGroup();
     permitCluster.addTo(map);
 
     map.on(L.Draw.Event.CREATED, e => {
@@ -189,6 +196,10 @@
     els.corridorForm.addEventListener('submit', saveCorridorForm);
 
     ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
+    els.layerConeZones.addEventListener('change', async () => {
+      updateLayerVisibility();
+      if (els.layerConeZones.checked) await ensureConeZonesLoaded();
+    });
     ['searchFilter','dateFrom','dateTo','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter']
       .forEach(id => els[id].addEventListener('input', scheduleRender));
     els.statusFilters.addEventListener('change', scheduleRender);
@@ -819,6 +830,303 @@
     });
   }
 
+  async function ensureConeZonesLoaded() {
+    if (coneZonesLoaded) return true;
+    if (coneZonesLoading) return coneZonesLoading;
+    setConeZonesStatus('Loading current City Cone Zones…');
+    coneZonesLoading = loadConeZonesFromOfficialExperience();
+    try {
+      const count = await coneZonesLoading;
+      coneZonesLoaded = true;
+      coneZonesFeatureCount = count;
+      setConeZonesStatus(`<strong>${count}</strong> current Cone Zones feature${count===1?'':'s'} loaded from the City map.`);
+      if (els.layerConeZones.checked) toggleLayer(coneZonesLayer,true);
+      return true;
+    } catch (err) {
+      console.warn('Cone Zones load failed', err);
+      coneZonesLayer.clearLayers();
+      coneZonesLoaded = false;
+      const msg = escapeHtml(err?.message || 'Public Cone Zones data could not be loaded.');
+      setConeZonesStatus(`Cone Zones unavailable right now. ${msg}`, true);
+      toast('Cone Zones could not be loaded from the City public map. Your permit data is unaffected.');
+      return false;
+    } finally {
+      coneZonesLoading = null;
+    }
+  }
+
+  function setConeZonesStatus(html, isError=false) {
+    if (!els.coneZonesStatus) return;
+    els.coneZonesStatus.hidden = false;
+    els.coneZonesStatus.classList.toggle('error', !!isError);
+    els.coneZonesStatus.innerHTML = html;
+  }
+
+  async function loadConeZonesFromOfficialExperience() {
+    coneZonesLayer.clearLayers();
+    const experienceData = await arcgisItemData(CONE_ZONES_EXPERIENCE_ID);
+    const ids = collectArcGisItemIds(experienceData);
+    if (!ids.length) throw new Error('The public Cone Zones app did not expose a map item.');
+
+    const metadataResults = await Promise.all(ids.slice(0,80).map(async id => {
+      try { return await arcgisItemInfo(id); } catch { return null; }
+    }));
+    let webMaps = metadataResults.filter(item => item && item.type === 'Web Map');
+    if (!webMaps.length) {
+      const nestedIds = new Set();
+      for (const item of metadataResults.filter(Boolean).slice(0,24)) {
+        try { collectArcGisItemIds(await arcgisItemData(item.id)).forEach(id => nestedIds.add(id)); } catch {}
+      }
+      const nestedMetadata = await Promise.all([...nestedIds].slice(0,80).map(async id => {
+        try { return await arcgisItemInfo(id); } catch { return null; }
+      }));
+      webMaps = nestedMetadata.filter(item => item && item.type === 'Web Map');
+    }
+    if (!webMaps.length) throw new Error('The public Cone Zones web map could not be discovered.');
+
+    webMaps = webMaps.sort((a,b) => coneMapScore(b)-coneMapScore(a));
+    const bestScore = coneMapScore(webMaps[0]);
+    const selected = bestScore > 0 ? webMaps.filter(m => coneMapScore(m) === bestScore) : [webMaps[0]];
+
+    let added = 0;
+    for (const webMap of selected.slice(0,2)) {
+      const data = await arcgisItemData(webMap.id);
+      const leaves = flattenArcGisOperationalLayers(data?.operationalLayers || []);
+      const relevant = leaves.filter(isConeZonesOperationalLayer);
+      const toLoad = relevant.length ? relevant : leaves.filter(l => !/camera|city limit|basemap/i.test(l.title || ''));
+      for (const descriptor of toLoad) {
+        try { added += await addConeZonesDescriptor(descriptor); }
+        catch (err) { console.warn('Cone Zones layer skipped', descriptor.title, err); }
+      }
+    }
+    if (!added) throw new Error('The City map loaded, but no public construction geometry was returned.');
+    return added;
+  }
+
+  function coneMapScore(item) {
+    const text = `${item?.title || ''} ${(item?.tags || []).join(' ')} ${item?.snippet || ''}`.toLowerCase();
+    let score = 0;
+    if (text.includes('cone')) score += 50;
+    if (text.includes('construction')) score += 20;
+    if (text.includes('travel')) score += 15;
+    if (text.includes('impact')) score += 15;
+    if (text.includes('boulder')) score += 5;
+    return score;
+  }
+
+  function collectArcGisItemIds(root) {
+    const ids = new Set();
+    const visit = value => {
+      if (!value) return;
+      if (Array.isArray(value)) { value.forEach(visit); return; }
+      if (typeof value !== 'object') return;
+      for (const [key,val] of Object.entries(value)) {
+        const k = key.toLowerCase();
+        const itemKey = k.includes('itemid') || k.includes('portalitem') || k.includes('webmap');
+        if (itemKey && typeof val === 'string' && /^(?:[a-f0-9]{32})$/i.test(val)) ids.add(val);
+        else if (itemKey && Array.isArray(val)) for (const entry of val) if (typeof entry === 'string' && /^(?:[a-f0-9]{32})$/i.test(entry)) ids.add(entry);
+        visit(val);
+      }
+    };
+    visit(root);
+    return [...ids];
+  }
+
+  async function arcgisItemInfo(id) {
+    const res = await fetch(`${ARCGIS_ITEMS_ROOT}/${encodeURIComponent(id)}?f=json`);
+    if (!res.ok) throw new Error(`ArcGIS item ${res.status}`);
+    const json = await res.json();
+    if (json?.error) throw new Error(json.error.message || 'ArcGIS item error');
+    return json;
+  }
+
+  async function arcgisItemData(id) {
+    const res = await fetch(`${ARCGIS_ITEMS_ROOT}/${encodeURIComponent(id)}/data?f=json`);
+    if (!res.ok) throw new Error(`ArcGIS data ${res.status}`);
+    const json = await res.json();
+    if (json?.error) throw new Error(json.error.message || 'ArcGIS data error');
+    return json;
+  }
+
+  function flattenArcGisOperationalLayers(layers, parentTitle='') {
+    const out = [];
+    for (const layer of layers || []) {
+      const title = [parentTitle, layer?.title || layer?.name || ''].filter(Boolean).join(' — ');
+      if (Array.isArray(layer?.layers) && layer.layers.length) {
+        if (layer.url) {
+          for (const sub of layer.layers) {
+            out.push({ ...sub, title:[title,sub.title || sub.name || `Layer ${sub.id}`].filter(Boolean).join(' — '), url:sub.url || `${layer.url.replace(/\/$/,'')}/${sub.id}` });
+          }
+        } else {
+          out.push(...flattenArcGisOperationalLayers(layer.layers, title));
+        }
+        continue;
+      }
+      out.push({ ...layer, title });
+    }
+    return out;
+  }
+
+  function isConeZonesOperationalLayer(layer) {
+    const text = `${layer?.title || ''} ${layer?.url || ''}`.toLowerCase();
+    if (/camera|city limit|basemap|reference|boundary/.test(text)) return false;
+    return /cone|construction|project|closure|detour|delay|impact|work zone|event|maintenance|outage/.test(text);
+  }
+
+  async function addConeZonesDescriptor(descriptor) {
+    if (descriptor.featureCollection?.layers?.length) {
+      let count = 0;
+      for (const fc of descriptor.featureCollection.layers) {
+        const features = fc?.featureSet?.features || [];
+        const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
+        count += addConeZonesGeoJson(converted, descriptor.title || fc?.layerDefinition?.name || 'Cone Zones');
+      }
+      return count;
+    }
+    if (!descriptor.url && descriptor.itemId) {
+      const item = await arcgisItemInfo(descriptor.itemId);
+      if (item?.url) descriptor = { ...descriptor, url:item.url };
+      else {
+        const itemData = await arcgisItemData(descriptor.itemId);
+        const embedded = itemData?.layers || itemData?.featureCollection?.layers || [];
+        let count = 0;
+        for (const fc of embedded) {
+          const features = fc?.featureSet?.features || [];
+          const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
+          count += addConeZonesGeoJson(converted, descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones');
+        }
+        return count;
+      }
+    }
+    if (!descriptor.url) return 0;
+    const queryTargets = await resolveArcGisQueryTargets(descriptor);
+    let count = 0;
+    for (const target of queryTargets) {
+      const geojson = await queryArcGisGeoJson(target.url, target.where);
+      count += addConeZonesGeoJson(geojson, target.title || descriptor.title || 'Cone Zones');
+    }
+    return count;
+  }
+
+  async function resolveArcGisQueryTargets(descriptor) {
+    const url = descriptor.url.replace(/\/$/,'');
+    const where = descriptor?.layerDefinition?.definitionExpression || descriptor?.definitionExpression || '1=1';
+    if (/\/(?:FeatureServer|MapServer)\/\d+$/i.test(url)) return [{ url, title:descriptor.title, where }];
+    if (!/\/(?:FeatureServer|MapServer)$/i.test(url)) return [];
+    const res = await fetch(`${url}?f=json`);
+    if (!res.ok) throw new Error(`Cone Zones service ${res.status}`);
+    const meta = await res.json();
+    const configured = new Map((descriptor.layers || []).map(l => [Number(l.id), l]));
+    return (meta.layers || []).filter(l => !l.subLayerIds?.length).map(l => {
+      const cfg = configured.get(Number(l.id));
+      return {
+        url:`${url}/${l.id}`,
+        title:[descriptor.title,cfg?.title || l.name].filter(Boolean).join(' — '),
+        where:cfg?.layerDefinition?.definitionExpression || cfg?.definitionExpression || where
+      };
+    });
+  }
+
+  async function queryArcGisGeoJson(layerUrl, where='1=1') {
+    const all = { type:'FeatureCollection', features:[] };
+    let offset = 0;
+    for (let page=0; page<6; page++) {
+      const params = new URLSearchParams({
+        where:where || '1=1', outFields:'*', returnGeometry:'true', outSR:'4326', f:'geojson',
+        resultOffset:String(offset), resultRecordCount:'2000'
+      });
+      const res = await fetch(`${layerUrl}/query?${params}`);
+      if (!res.ok) throw new Error(`Cone Zones query ${res.status}`);
+      const json = await res.json();
+      if (json?.error) throw new Error(json.error.message || 'Cone Zones query error');
+      const features = Array.isArray(json?.features) ? json.features : [];
+      all.features.push(...features);
+      if (features.length < 2000 || !json.exceededTransferLimit) break;
+      offset += features.length;
+    }
+    return all;
+  }
+
+  function addConeZonesGeoJson(geojson, layerTitle) {
+    const features = Array.isArray(geojson?.features) ? geojson.features.filter(f => f?.geometry) : [];
+    if (!features.length) return 0;
+    const layer = L.geoJSON({ type:'FeatureCollection', features }, {
+      pane:'overlayPane',
+      style: feature => coneZoneStyle(feature),
+      pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius:6, color:'#fff', weight:2, fillColor:'#d66b24', fillOpacity:.95 }),
+      onEachFeature: (feature, leafletLayer) => leafletLayer.bindPopup(coneZonePopup(feature, layerTitle), { maxWidth:340, className:'cone-zone-popup' })
+    });
+    layer.addTo(coneZonesLayer);
+    return features.length;
+  }
+
+  function coneZoneStyle(feature) {
+    const type = feature?.geometry?.type || '';
+    if (/Polygon/i.test(type)) return { color:'#c65d1d', weight:2, opacity:.9, fillColor:'#e39a54', fillOpacity:.16 };
+    return { color:'#d66b24', weight:4, opacity:.88 };
+  }
+
+  function coneZonePopup(feature, layerTitle) {
+    const p = feature?.properties || {};
+    const title = firstProperty(p, ['projectname','project_name','name','title','project','location','address']) || layerTitle || 'Cone Zones';
+    const rows = [];
+    const preferred = [
+      ['Impact',['impact','travelimpact','travel_impact','description','details','summary']],
+      ['Status',['status','projectstatus','project_status']],
+      ['Start',['startdate','start_date','begindate','begin_date','fromdate','datefrom']],
+      ['End',['enddate','end_date','completiondate','completion_date','todate','dateto']],
+      ['Location',['location','address','street','limits']]
+    ];
+    const used = new Set();
+    for (const [label, keys] of preferred) {
+      const hit = firstPropertyEntry(p, keys);
+      if (!hit || hit[1]===null || hit[1]==='') continue;
+      used.add(hit[0]);
+      rows.push(`<div class="popup-row"><span class="popup-label">${escapeHtml(label)}</span>${escapeHtml(formatConeValue(hit[1]))}</div>`);
+      if (rows.length >= 5) break;
+    }
+    if (rows.length < 3) {
+      for (const [key,value] of Object.entries(p)) {
+        if (used.has(key) || value===null || value==='' || /objectid|globalid|shape|fid|latitude|longitude/i.test(key)) continue;
+        rows.push(`<div class="popup-row"><span class="popup-label">${escapeHtml(friendlyFieldName(key))}</span>${escapeHtml(formatConeValue(value))}</div>`);
+        if (rows.length >= 5) break;
+      }
+    }
+    return `<div class="cone-zone-layer-name">${escapeHtml(layerTitle || 'Cone Zones')}</div><div class="popup-title">${escapeHtml(formatConeValue(title))}</div>${rows.join('')}<div class="cone-zone-source">Live reference from City of Boulder Cone Zones</div>`;
+  }
+
+  function firstProperty(props, names) { const hit=firstPropertyEntry(props,names); return hit ? hit[1] : ''; }
+  function firstPropertyEntry(props, names) {
+    const entries=Object.entries(props || {});
+    for (const wanted of names) {
+      const hit=entries.find(([k]) => k.toLowerCase().replace(/[^a-z0-9]/g,'') === wanted.toLowerCase().replace(/[^a-z0-9]/g,''));
+      if (hit) return hit;
+    }
+    return null;
+  }
+  function friendlyFieldName(key) { return String(key).replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\b\w/g,m=>m.toUpperCase()); }
+  function formatConeValue(value) {
+    if (typeof value === 'number' && value > 946684800000 && value < 4102444800000) {
+      const d=new Date(value); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString();
+    }
+    const s=String(value ?? '');
+    const ms=/^\/Date\((\d+)\)\/$/.exec(s); if (ms) { const d=new Date(Number(ms[1])); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString(); }
+    return s.length > 260 ? `${s.slice(0,257)}…` : s;
+  }
+
+  function esriFeaturesToGeoJson(features, geometryType) {
+    const out=[];
+    for (const f of features || []) {
+      const g=f.geometry || {};
+      let geometry=null;
+      if (Number.isFinite(g.x) && Number.isFinite(g.y)) geometry={type:'Point',coordinates:[g.x,g.y]};
+      else if (Array.isArray(g.paths)) geometry={type:g.paths.length>1?'MultiLineString':'LineString',coordinates:g.paths.length>1?g.paths:g.paths[0]};
+      else if (Array.isArray(g.rings)) geometry={type:'Polygon',coordinates:g.rings};
+      if (geometry) out.push({type:'Feature',geometry,properties:f.attributes || {}});
+    }
+    return {type:'FeatureCollection',features:out};
+  }
+
   function permitNearAnyCorridor(p) {
     if (!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)) return false; const point=turf.point([p.lng,p.lat]);
     for (const c of state.corridors) {
@@ -846,7 +1154,7 @@
   }
 
   function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(p=>!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); }
   function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
@@ -856,6 +1164,7 @@
 
   function fitAll() {
     const points=[]; for (const p of filteredPermits()) if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) points.push([p.lat,p.lng]); for (const v of venueRuntime.values()) points.push([v.lat,v.lng]); for (const c of state.corridors) for (const path of getCorridorPaths(c)) points.push(...path);
+    if (els.layerConeZones.checked && coneZonesLoaded && coneZonesLayer.getLayers().length) { const b=coneZonesLayer.getBounds(); if (b.isValid()) { points.push([b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]); } }
     if (points.length) map.fitBounds(points,{padding:[35,35],maxZoom:16}); else map.setView(BOULDER_CENTER,13);
   }
 

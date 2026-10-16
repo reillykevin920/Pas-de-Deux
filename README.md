@@ -2,9 +2,10 @@
 
 A map-first coordination tool for the 2027 Sundance Film Festival in Boulder and City permit activity.
 
-## What v2 does
+## What v2.2 does
 
 - Interactive Boulder map with Sundance venue sites and venue building footprints.
+- Toggleable **Cone Zones** reference layer sourced at runtime from the City of Boulder public Cone Zones ArcGIS experience. It is never copied into or merged with local permit records.
 - Imports permit **filenames only** from a connected folder, folder upload, or drag/drop.
 - Never opens, parses, previews, uploads, or attaches permit PDFs.
 - Preserves the source filename and filename-derived values exactly as written.
@@ -62,6 +63,9 @@ Pas de Deux requests public data directly in the browser:
 - City of Boulder Address Points
 - City of Boulder Building Footprints
 - City of Boulder Street Centerlines (`StreetsSimple`)
-- CARTO basemap / OpenStreetMap data
+- OpenStreetMap standard basemap tiles (no API key)
+- City of Boulder public Cone Zones ArcGIS experience/web map (loaded only when the Cone Zones layer is toggled on)
 
-No City authentication or internal system connection is required for these map/reference layers.
+No City authentication, internal system connection, or basemap API key is required for these map/reference layers.
+
+The Cone Zones integration discovers the operational web map behind the City's public Experience at runtime, then requests its public construction/travel-impact feature geometry. This avoids baking a stale copy of Cone Zones into Pas de Deux. If the City changes the public ArcGIS configuration or temporarily blocks a layer, Pas de Deux reports the Cone Zones layer as unavailable without affecting local permit data.
