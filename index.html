@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="dark" />
-  <title>Sundance ROW Map — Boulder</title>
+  <meta name="color-scheme" content="light" />
+  <title>Pas de Deux — Boulder</title>
   <link rel="preconnect" href="https://unpkg.com" />
-  <link rel="preconnect" href="https://tile.openstreetmap.org" />
+  <link rel="preconnect" href="https://basemaps.cartocdn.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
@@ -14,102 +14,132 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div>
-      <div class="eyebrow">CITY OF BOULDER • ROW OPERATIONS</div>
-      <h1>Sundance ROW Map</h1>
-      <div class="subhead">2027 Sundance Film Festival • Jan 21–31</div>
+  <header class="appbar">
+    <div class="brand-lockup">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
+      <div>
+        <h1>Pas de Deux</h1>
+        <p>Sundance + Permit Coordination <span>•</span> Boulder <span>•</span> Jan 21–31, 2027</p>
+      </div>
     </div>
-    <div class="top-actions">
-      <button id="connectFolderBtn" class="btn primary">Connect permit folder</button>
-      <label class="btn" for="filePicker">Import filenames</label>
+    <div class="app-actions">
+      <button id="connectFolderBtn" class="button primary">Connect permit folder</button>
+      <label class="button" for="filePicker">Import filenames</label>
       <input id="filePicker" type="file" multiple webkitdirectory directory hidden />
-      <button id="exportBtn" class="btn">Export backup</button>
-      <label class="btn" for="importBackup">Import backup</label>
-      <input id="importBackup" type="file" accept="application/json,.json" hidden />
+      <div class="menu-wrap">
+        <button id="dataMenuBtn" class="button quiet" aria-expanded="false">Data ▾</button>
+        <div id="dataMenu" class="menu" hidden>
+          <button id="exportBtn">Export backup</button>
+          <label for="importBackup">Import backup</label>
+          <input id="importBackup" type="file" accept="application/json,.json" hidden />
+          <button id="exportCsvBtn">Export permit CSV</button>
+          <div class="menu-rule"></div>
+          <button id="clearAllBtn" class="danger-text">Clear local data</button>
+        </div>
+      </div>
     </div>
   </header>
 
-  <main class="shell">
+  <main class="workspace">
     <aside class="sidebar">
-      <section class="panel stats-panel">
-        <div class="metric"><span id="visibleCount">0</span><small>visible permits</small></div>
-        <div class="metric"><span id="totalCount">0</span><small>total permits</small></div>
-        <div class="metric"><span id="unlocatedCount">0</span><small>unlocated</small></div>
-      </section>
+      <div class="summary-strip">
+        <div><strong id="visibleCount">0</strong><span>Visible</span></div>
+        <div><strong id="totalCount">0</strong><span>Total</span></div>
+        <div><strong id="unlocatedCount">0</strong><span>Unlocated</span></div>
+      </div>
 
-      <section class="panel">
-        <div class="panel-title-row">
-          <h2>Layers</h2>
-          <button id="fitAllBtn" class="text-btn">Fit map</button>
+      <section class="section">
+        <div class="section-head">
+          <h2>Map layers</h2>
+          <button id="fitAllBtn" class="link-button">Fit map</button>
         </div>
-        <label class="check"><input id="layerPermits" type="checkbox" checked /> Permit pins</label>
-        <label class="check"><input id="layerVenues" type="checkbox" checked /> Sundance venues</label>
-        <label class="check"><input id="layerBuildings" type="checkbox" checked /> Sundance buildings</label>
-        <label class="check"><input id="layerVenueContext" type="checkbox" /> 500-ft venue context</label>
-        <label class="check"><input id="layerCorridors" type="checkbox" checked /> Corridors</label>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title-row">
-          <h2>Corridors</h2>
-          <button id="drawCorridorBtn" class="btn compact">Draw corridor</button>
+        <div class="layer-grid">
+          <label class="toggle-row"><input id="layerPermits" type="checkbox" checked /><span>Permits</span></label>
+          <label class="toggle-row"><input id="layerVenues" type="checkbox" checked /><span>Sundance sites</span></label>
+          <label class="toggle-row"><input id="layerBuildings" type="checkbox" checked /><span>Venue buildings</span></label>
+          <label class="toggle-row"><input id="layerVenueContext" type="checkbox" /><span>500-ft venue context</span></label>
+          <label class="toggle-row"><input id="layerCorridors" type="checkbox" checked /><span>Corridors</span></label>
         </div>
-        <p class="hint">Draw routes that matter operationally. The map shows geography; you decide actual ROW impact.</p>
-        <div id="corridorList" class="mini-list"></div>
       </section>
 
-      <section class="panel filters">
-        <div class="panel-title-row">
+      <section class="section">
+        <div class="section-head corridor-head">
+          <div>
+            <h2>Corridors</h2>
+            <p>Select an actual Boulder street or draw a custom route.</p>
+          </div>
+          <button id="addCorridorBtn" class="button small primary">Add</button>
+        </div>
+        <div id="corridorActions" class="corridor-actions" hidden>
+          <button id="selectStreetCorridorBtn" class="choice-button"><strong>Select street</strong><span>Click a mapped street, then choose its extent.</span></button>
+          <button id="drawCorridorBtn" class="choice-button"><strong>Draw custom route</strong><span>Fallback for routes that do not follow one street.</span></button>
+        </div>
+        <div id="corridorList" class="record-list"></div>
+      </section>
+
+      <section class="section filters">
+        <div class="section-head">
           <h2>Permit filters</h2>
-          <button id="resetFiltersBtn" class="text-btn">Reset</button>
+          <button id="resetFiltersBtn" class="link-button">Reset</button>
         </div>
 
-        <label class="field">
-          <span>Search</span>
-          <input id="searchFilter" type="search" placeholder="Address, permit #, contractor…" />
-        </label>
+        <label class="field search-field"><span>Search</span><input id="searchFilter" type="search" placeholder="Address, permit #, contractor…" /></label>
 
         <div class="field">
           <span>Status</span>
-          <div id="statusFilters" class="chip-grid"></div>
+          <div id="statusFilters" class="status-grid"></div>
         </div>
 
         <div class="two-col">
-          <label class="field"><span>Start / active after</span><input id="dateFrom" type="date" /></label>
-          <label class="field"><span>End / active before</span><input id="dateTo" type="date" /></label>
+          <label class="field"><span>Active after</span><input id="dateFrom" type="date" /></label>
+          <label class="field"><span>Active before</span><input id="dateTo" type="date" /></label>
         </div>
-        <div class="filter-shortcuts"><button id="festivalWindowBtn" class="tiny-btn" type="button">Sundance window</button><button id="clearDatesBtn" class="tiny-btn" type="button">Clear dates</button></div>
+        <div class="inline-actions"><button id="festivalWindowBtn" class="tag-button" type="button">Sundance window</button><button id="clearDatesBtn" class="tag-button" type="button">Clear dates</button></div>
 
         <label class="field"><span>Work type</span><select id="workTypeFilter"><option value="">All work types</option></select></label>
         <label class="field"><span>Contractor</span><select id="contractorFilter"><option value="">All contractors</option></select></label>
 
-        <label class="check"><input id="corridorOnlyFilter" type="checkbox" /> Only permits near a corridor</label>
-        <label class="check"><input id="venueOnlyFilter" type="checkbox" /> Only permits near a Sundance venue</label>
-        <label class="check"><input id="hideClosedFilter" type="checkbox" checked /> Hide closed permits</label>
-        <label class="check"><input id="hideArchivedFilter" type="checkbox" checked /> Hide archived permits</label>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title-row"><h2>Permit data</h2></div>
-        <div class="button-stack">
-          <button id="showUnlocatedBtn" class="btn">Review unlocated permits</button>
-          <button id="exportCsvBtn" class="btn">Export permit CSV</button>
-          <button id="clearAllBtn" class="btn danger-outline">Clear local data</button>
+        <div class="filter-checks">
+          <label class="toggle-row"><input id="corridorOnlyFilter" type="checkbox" /><span>Near a corridor</span></label>
+          <label class="toggle-row"><input id="venueOnlyFilter" type="checkbox" /><span>Near a Sundance site</span></label>
+          <label class="toggle-row"><input id="hideClosedFilter" type="checkbox" checked /><span>Hide closed</span></label>
+          <label class="toggle-row"><input id="hideArchivedFilter" type="checkbox" checked /><span>Hide archived</span></label>
         </div>
       </section>
 
-      <section class="panel source-note">
-        <strong>Source rule</strong>
-        <p>Filename-derived values are stored verbatim. Display capitalization may be cleaned up, but source text and filenames are never rewritten.</p>
+      <section class="section compact-section">
+        <button id="showUnlocatedBtn" class="button full">Review unlocated permits</button>
+        <p class="source-note">Filename-derived source values remain verbatim. Any capitalization cleanup is display-only.</p>
       </section>
     </aside>
 
     <section class="map-wrap">
       <div id="map"></div>
+
+      <div id="corridorModeBar" class="mode-bar" hidden>
+        <div>
+          <strong id="corridorModeTitle">Select a street</strong>
+          <span id="corridorModeText">Click the street you want to designate as a corridor.</span>
+        </div>
+        <button id="cancelCorridorModeBtn" class="button inverse">Cancel</button>
+      </div>
+
+      <div id="mapKey" class="map-key">
+        <button id="mapKeyToggle" aria-expanded="false">Map key</button>
+        <div id="mapKeyBody" hidden>
+          <div><i class="dot upcoming"></i>Upcoming</div>
+          <div><i class="dot active"></i>Active</div>
+          <div><i class="dot closed"></i>Closed</div>
+          <div><i class="venue-key"></i>Sundance site</div>
+          <div><i class="corridor-key"></i>Corridor</div>
+        </div>
+      </div>
+
       <div id="dropZone" class="drop-zone" aria-hidden="true">
-        <div>Drop permit PDFs or a permit folder</div>
-        <small>Only filenames are used. PDF contents are never read.</small>
+        <div class="drop-card">
+          <strong>Drop permit PDFs or a permit folder</strong>
+          <span>Only filenames are used. PDF contents are never read.</span>
+        </div>
       </div>
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </section>
@@ -118,73 +148,57 @@
   <dialog id="permitDialog" class="dialog">
     <form method="dialog" id="permitForm">
       <div class="dialog-head">
-        <div>
-          <div class="eyebrow">PERMIT RECORD</div>
-          <h2 id="permitDialogTitle">Permit</h2>
-        </div>
-        <button class="icon-btn" value="cancel" aria-label="Close">×</button>
+        <div><span class="dialog-kicker">Permit record</span><h2 id="permitDialogTitle">Permit</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
-
       <div id="sourceBlock" class="source-block"></div>
-
       <div class="form-grid">
         <label class="field"><span>Permit #</span><input name="permitNumber" autocomplete="off" /></label>
-        <label class="field"><span>Status</span>
-          <select name="status">
-            <option>Application</option>
-            <option>Upcoming</option>
-            <option>Active</option>
-            <option>Closed</option>
-            <option>Archived</option>
-          </select>
-        </label>
+        <label class="field"><span>Status</span><select name="status"><option>Upcoming</option><option>Active</option><option>Closed</option></select></label>
         <label class="field"><span>Start date</span><input name="startDate" type="date" /></label>
         <label class="field"><span>End date</span><input name="endDate" type="date" /></label>
-        <label class="field full"><span>ROW impact</span><textarea name="rowImpact" rows="2" placeholder="Your assessment"></textarea></label>
+        <label class="field full"><span>Impact assessment</span><textarea name="rowImpact" rows="2" placeholder="Your operational assessment"></textarea></label>
         <label class="field full"><span>Notes</span><textarea name="notes" rows="4"></textarea></label>
       </div>
+      <div class="location-tools"><div id="matchInfo" class="match-info"></div><div><button id="movePinBtn" type="button" class="button">Move pin</button><button id="retryLocateBtn" type="button" class="button">Retry address match</button></div></div>
+      <div class="dialog-actions split"><div><button id="archivePermitBtn" type="button" class="button">Archive</button><button id="deletePermitBtn" type="button" class="button danger-outline">Delete permanently</button></div><div><button class="button" value="cancel">Cancel</button><button id="savePermitBtn" type="submit" class="button primary" value="default">Save</button></div></div>
+    </form>
+  </dialog>
 
-      <div class="location-tools">
-        <div id="matchInfo" class="match-info"></div>
-        <button id="movePinBtn" type="button" class="btn">Move pin manually</button>
-        <button id="retryLocateBtn" type="button" class="btn">Retry address match</button>
+  <dialog id="streetScopeDialog" class="dialog scope-dialog">
+    <form method="dialog" id="streetScopeForm">
+      <div class="dialog-head">
+        <div><span class="dialog-kicker">Street corridor</span><h2 id="selectedStreetName">Selected street</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
-
-      <div class="dialog-actions split">
-        <div>
-          <button id="archivePermitBtn" type="button" class="btn">Archive</button>
-          <button id="deletePermitBtn" type="button" class="btn danger-outline">Delete permanently</button>
-        </div>
-        <div>
-          <button class="btn" value="cancel">Cancel</button>
-          <button id="savePermitBtn" type="submit" class="btn primary" value="default">Save</button>
-        </div>
+      <p class="dialog-intro">Choose how much of this street belongs in the corridor. This defines map context only; it does not determine permit impact.</p>
+      <div class="scope-choices">
+        <button id="wholeStreetBtn" type="button" class="scope-card"><strong>Entire street</strong><span>Use every matching centerline segment in Boulder.</span></button>
+        <button id="streetSectionBtn" type="button" class="scope-card"><strong>Select a section</strong><span>Choose two points on the map and keep only the street between that area.</span></button>
       </div>
+      <div class="dialog-actions"><button class="button" value="cancel">Cancel</button></div>
     </form>
   </dialog>
 
   <dialog id="corridorDialog" class="dialog small-dialog">
     <form method="dialog" id="corridorForm">
       <div class="dialog-head">
-        <div><div class="eyebrow">CORRIDOR</div><h2>Corridor details</h2></div>
-        <button class="icon-btn" value="cancel">×</button>
+        <div><span class="dialog-kicker">Corridor</span><h2>Corridor details</h2></div>
+        <button class="icon-button" value="cancel">×</button>
       </div>
-      <label class="field"><span>Name</span><input name="name" required placeholder="Broadway — Downtown" /></label>
+      <label class="field"><span>Name</span><input name="name" required placeholder="28th Street — Sundance circulation" /></label>
       <div class="two-col">
         <label class="field"><span>Priority</span><select name="priority"><option>Primary</option><option>Secondary</option></select></label>
         <label class="field"><span>Context buffer (ft)</span><input name="bufferFeet" type="number" min="0" max="2000" step="25" value="150" /></label>
       </div>
       <label class="field"><span>Notes</span><textarea name="notes" rows="3"></textarea></label>
-      <div class="dialog-actions"><button class="btn" value="cancel">Cancel</button><button class="btn primary" type="submit" value="default">Save corridor</button></div>
+      <div class="dialog-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Save corridor</button></div>
     </form>
   </dialog>
 
   <dialog id="unlocatedDialog" class="dialog">
-    <div class="dialog-head">
-      <div><div class="eyebrow">ADDRESS REVIEW</div><h2>Unlocated permits</h2></div>
-      <button id="closeUnlocatedBtn" class="icon-btn">×</button>
-    </div>
-    <p class="hint">These records remain in the dataset. Use “Place on map” to click the correct location manually.</p>
+    <div class="dialog-head"><div><span class="dialog-kicker">Address review</span><h2>Unlocated permits</h2></div><button id="closeUnlocatedBtn" class="icon-button">×</button></div>
+    <p class="dialog-intro">These records stay in the dataset. Place one manually if the public address match cannot resolve it.</p>
     <div id="unlocatedList" class="unlocated-list"></div>
   </dialog>
 

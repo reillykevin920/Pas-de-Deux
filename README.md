@@ -1,117 +1,67 @@
-# Sundance ROW Map — Boulder
+# Pas de Deux
 
-Single-station first build for visualizing City of Boulder ROW permit activity against the 2027 Sundance Film Festival venue footprint and manually defined operational corridors.
+A map-first coordination tool for the 2027 Sundance Film Festival in Boulder and City permit activity.
 
-## Core behavior
+## What v2 does
 
-- Static browser app; no City login, ArcGIS license, or internal API is required.
-- Basemap: OpenStreetMap tiles.
-- Permit location matching: City of Boulder public Address Points ArcGIS REST service.
-- Sundance building highlighting: City of Boulder public Building Footprints ArcGIS REST service.
-- Permit files are **never opened, parsed, previewed, uploaded, or attached**. The importer uses filenames only.
-- Expected filename structure: `address# - street - work type - contractor.pdf`.
-- Filename-derived values are stored **verbatim**. The UI may improve capitalization for readability, but source values and the original filename remain unchanged.
-- Existing permit metadata is retained on subsequent scans. Re-scanning a folder never reopens a closed permit or overwrites notes/status/dates.
-- Missing files are not interpreted as deleted permits.
-
-## Permit metadata
-
-Filename-derived / read-only:
-
-- Address number
-- Street
-- Work type
-- Contractor
-- Original filename
-
-Editable:
-
-- Permit #
-- Status: Application / Upcoming / Active / Closed / Archived
-- Start date
-- End date
-- ROW impact
-- Notes
-
-Closed permits are hidden by default but remain in the dataset. Archived permits are also hidden by default. Permanent delete is a separate explicit action.
-
-## Import methods
-
-### Connect permit folder
-
-In Chromium-based browsers on HTTPS (for example GitHub Pages), `Connect permit folder` uses the File System Access API. The scan enumerates filenames recursively. It intentionally does not call `getFile()` on permit files.
-
-The selected folder handle is retained in IndexedDB when the browser allows it. The user may need to re-authorize folder access after a restart/browser policy change.
-
-### Drag and drop / Import filenames
-
-Folders or PDFs can be dragged onto the map. Direct file selection is also available. Only the file metadata/name is used; PDF bytes are not read.
+- Interactive Boulder map with Sundance venue sites and venue building footprints.
+- Imports permit **filenames only** from a connected folder, folder upload, or drag/drop.
+- Never opens, parses, previews, uploads, or attaches permit PDFs.
+- Preserves the source filename and filename-derived values exactly as written.
+- Uses presentation-only capitalization cleanup for readability.
+- Locates permit pins with City of Boulder public Address Points.
+- Editable permit fields: Permit #, Status, Start date, End date, Impact assessment, Notes.
+- Permit statuses: Upcoming, Active, Closed.
+- Archive is a separate record state; closed/archived records can be hidden without deleting them.
+- Sundance-window, status, date, work type, contractor, corridor, venue, and text filters.
+- JSON backup/restore and CSV export.
 
 ## Corridors
 
-Use `Draw corridor` to click out a route. Each corridor has:
+The primary corridor workflow uses City of Boulder public street-centerline data:
 
-- Name
-- Primary / Secondary priority
-- Context buffer in feet
-- Notes
+1. Click **Add** under Corridors.
+2. Choose **Select street**.
+3. Click the street on the map.
+4. Choose either:
+   - **Entire street** — every matching City centerline segment; or
+   - **Select a section** — click two endpoints and Pas de Deux keeps the selected street geometry within that section.
+5. Add corridor name, priority, context buffer, and notes.
 
-The context buffer is a visual/spatial aid and can be used by the `Only permits near a corridor` filter. It is **not** an automated ROW-impact determination.
+The corridor layer provides geographic context only. Pas de Deux does not decide whether a permit actually impacts Sundance operations.
 
-Corridor geometry can be reshaped from the Corridors list.
+**Draw custom route** remains available for routes that do not follow a single street.
 
-## Sundance layers
+Every corridor-selection mode can be cancelled with the visible **Cancel** button or the **Esc** key. Cancelling does not create a corridor.
 
-The app resolves official 2027 venue sites against Boulder public address data and attempts to highlight the corresponding City building footprint. Venue markers remain the primary reference if a footprint cannot be resolved.
+## Existing v1 data
 
-A toggleable 500-ft venue context layer and `Only permits near a Sundance venue` filter are included as spatial aids only.
+v2 intentionally keeps the original browser storage key so existing local data survives the upgrade.
 
-## Filters
+- old `Application` status → `Upcoming`
+- old `Archived` status → `Closed` + archived record state
+- old hand-drawn corridor geometry is migrated into the v2 corridor format
 
-- Text search
-- Permit status
-- Date-range intersection
-- One-click Sundance window (Jan 21–31, 2027)
-- Exact-source work type values
-- Exact-source contractor values
-- Near manually drawn corridor
-- Near Sundance venue
-- Hide closed
-- Hide archived
+## Run / deploy
 
-Work type and contractor dropdown values preserve the exact source values internally even when display capitalization is improved.
-
-## Local persistence / backup
-
-The first build stores permit records and corridors in browser `localStorage`.
-
-Use:
-
-- `Export backup` for a complete JSON backup.
-- `Import backup` to restore/transfer a workstation dataset.
-- `Export permit CSV` for a flat permit table.
-
-The storage boundary is intentionally small (`loadState()` / `saveState()` in `app.js`) so the later shared permit-tech version can replace local persistence with a shared backend without rebuilding the map, parser, filters, corridor editor, or permit UI.
-
-## Deployment
-
-This is a static site. Upload these files to a GitHub repository:
+These four files are the complete app:
 
 - `index.html`
-- `styles.css`
 - `app.js`
+- `styles.css`
+- `README.md`
 
-Then enable GitHub Pages for the repository. HTTPS is recommended and is required for the best folder-connection behavior.
+For GitHub Pages, place the first three files at the repository root (README can remain there too), commit, push, and publish the branch through **Settings → Pages**.
 
-No build command is required.
+Folder connection uses the browser File System Access API and is best supported in Chromium browsers such as Chrome and Edge. Import filenames and drag/drop remain available as fallbacks.
 
-## External runtime dependencies
+## Public data services
 
-Loaded from public CDNs:
+Pas de Deux requests public data directly in the browser:
 
-- Leaflet 1.9.4
-- Leaflet.draw 1.0.4
-- Leaflet.markercluster 1.5.3
-- Turf 7
+- City of Boulder Address Points
+- City of Boulder Building Footprints
+- City of Boulder Street Centerlines (`StreetsSimple`)
+- CARTO basemap / OpenStreetMap data
 
-The map and Boulder GIS lookups require network access. Offline behavior was intentionally not included in this build.
+No City authentication or internal system connection is required for these map/reference layers.

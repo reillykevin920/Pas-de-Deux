@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'sundance-row-map:v1';
+  const STORAGE_KEY = 'sundance-row-map:v1'; // keep v1 key so first-build data survives the upgrade
   const DB_NAME = 'sundance-row-map-handles';
   const DB_STORE = 'handles';
   const FESTIVAL_START = '2027-01-21';
@@ -11,8 +11,8 @@
 
   const ADDRESS_QUERY = 'https://gis.bouldercolorado.gov/ags_svr1/rest/services/plan/AddressPoints/MapServer/0/query';
   const BUILDING_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/pw/BuildingFootprints/MapServer/0/query';
+  const STREET_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/trans/StreetsSimple/MapServer/0/query';
 
-  // Official 2027 venue list grouped by physical site. Addresses are used only to locate the sites.
   const VENUES = [
     { id:'boulder-theater', name:'Boulder Theater', addressNumber:'2032', street:'14th', address:'2032 14th St', uses:'Screenings' },
     { id:'boulder-high', name:'Boulder High School Auditorium', addressNumber:'1604', street:'Arapahoe', address:'1604 Arapahoe Ave', uses:'Screenings' },
@@ -28,28 +28,33 @@
     { id:'canyon', name:'Canyon Theater — Boulder Public Library', addressNumber:'1001', street:'Arapahoe', address:'1001 Arapahoe Ave', uses:'Talks + programming' }
   ];
 
+  const STATUS_VALUES = ['Upcoming','Active','Closed'];
 
-  const STATUS_VALUES = ['Application','Upcoming','Active','Closed','Archived'];
-
-  let state = loadState();
+  let state = migrateState(loadState());
   let map;
   let permitCluster;
   let venueLayer;
   let venueBuildingLayer;
   let venueContextLayer;
   let corridorLayer;
+  let corridorPreviewLayer;
+  let corridorEndpointLayer;
   let currentPermitId = null;
-  let pendingCorridorLatLngs = null;
   let currentCorridorId = null;
+  let pendingCorridor = null;
   let mapMovePermitId = null;
   let manualPlacePermitId = null;
   let folderHandle = null;
   let renderScheduled = false;
   let toastTimer = null;
+  let activeDrawHandler = null;
+  let corridorMode = null; // select-street | select-section | draw-custom
+  let selectedStreet = null;
+  let sectionStart = null;
+  let corridorRequestToken = 0;
   const corridorRuntime = new Map();
   const venueRuntime = new Map();
   const addressLookupCache = new Map();
-
   const els = {};
 
   document.addEventListener('DOMContentLoaded', init);
@@ -59,11 +64,12 @@
     initMap();
     initStatusFilters();
     bindUI();
+    saveState(); // save any migration immediately
 
     if (!state.initialized) {
       state.initialized = true;
       saveState();
-      toast('Ready. Connect a permit folder or drag permit PDFs/folders onto the map. Only filenames will be used.');
+      toast('Ready. Connect a permit folder or drop permit files onto the map. Only filenames are used.');
     }
 
     folderHandle = await idbGet('permitFolder');
@@ -76,53 +82,44 @@
 
   function cacheElements() {
     [
-      'visibleCount','totalCount','unlocatedCount','connectFolderBtn','filePicker','exportBtn','importBackup',
-      'layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','fitAllBtn','drawCorridorBtn','corridorList',
-      'searchFilter','statusFilters','dateFrom','dateTo','festivalWindowBtn','clearDatesBtn','workTypeFilter','contractorFilter','corridorOnlyFilter',
-      'venueOnlyFilter','hideClosedFilter','hideArchivedFilter','resetFiltersBtn','showUnlocatedBtn','exportCsvBtn',
-      'clearAllBtn','map','dropZone','toast','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo',
-      'movePinBtn','retryLocateBtn','archivePermitBtn','deletePermitBtn','corridorDialog','corridorForm','unlocatedDialog',
-      'closeUnlocatedBtn','unlocatedList'
+      'visibleCount','totalCount','unlocatedCount','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
+      'dataMenuBtn','dataMenu','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','fitAllBtn',
+      'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','dateFrom','dateTo',
+      'festivalWindowBtn','clearDatesBtn','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
+      'resetFiltersBtn','showUnlocatedBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
+      'mapKeyToggle','mapKeyBody','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
+      'deletePermitBtn','streetScopeDialog','streetScopeForm','selectedStreetName','wholeStreetBtn','streetSectionBtn','corridorDialog','corridorForm',
+      'unlocatedDialog','closeUnlocatedBtn','unlocatedList'
     ].forEach(id => els[id] = document.getElementById(id));
   }
 
   function initMap() {
     map = L.map('map', { zoomControl:true, preferCanvas:true }).setView(BOULDER_CENTER, 13);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom:20,
-      attribution:'&copy; OpenStreetMap contributors'
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      subdomains:'abcd', maxZoom:20,
+      attribution:'&copy; OpenStreetMap contributors &copy; CARTO'
     }).addTo(map);
 
-    permitCluster = L.markerClusterGroup({ disableClusteringAtZoom:17, showCoverageOnHover:false, maxClusterRadius:46 });
+    permitCluster = L.markerClusterGroup({ disableClusteringAtZoom:17, showCoverageOnHover:false, maxClusterRadius:44 });
     venueLayer = L.layerGroup().addTo(map);
     venueBuildingLayer = L.layerGroup().addTo(map);
     venueContextLayer = L.layerGroup();
     corridorLayer = L.layerGroup().addTo(map);
+    corridorPreviewLayer = L.layerGroup().addTo(map);
+    corridorEndpointLayer = L.layerGroup().addTo(map);
     permitCluster.addTo(map);
 
-    const legend = L.control({ position:'bottomleft' });
-    legend.onAdd = () => {
-      const div = L.DomUtil.create('div','legend-box');
-      div.innerHTML = `
-        <div><span class="legend-dot" style="background:#c77dff"></span>Application</div>
-        <div><span class="legend-dot" style="background:#4db6ff"></span>Upcoming</div>
-        <div><span class="legend-dot" style="background:#ff9f43"></span>Active</div>
-        <div><span class="legend-dot" style="background:#7d8792"></span>Closed</div>
-        <div><span class="legend-dot" style="background:#e7ff66"></span>Sundance venue</div>`;
-      return div;
-    };
-    legend.addTo(map);
-
     map.on(L.Draw.Event.CREATED, e => {
-      if (e.layerType !== 'polyline') return;
-      pendingCorridorLatLngs = e.layer.getLatLngs().map(ll => [ll.lat, ll.lng]);
-      currentCorridorId = null;
-      els.corridorForm.reset();
-      els.corridorForm.elements.bufferFeet.value = 150;
-      els.corridorDialog.showModal();
+      if (corridorMode !== 'draw-custom' || e.layerType !== 'polyline') return;
+      const path = e.layer.getLatLngs().map(ll => [ll.lat, ll.lng]);
+      activeDrawHandler = null;
+      if (path.length < 2) return cancelCorridorMode();
+      pendingCorridor = { sourceType:'custom', scope:'Custom route', streetLabel:'', paths:[path] };
+      exitCorridorMapMode(false);
+      prepareCorridorForm({ suggestedName:'Custom corridor' });
     });
 
-    map.on('click', e => {
+    map.on('click', async e => {
       if (mapMovePermitId || manualPlacePermitId) {
         const id = mapMovePermitId || manualPlacePermitId;
         const permit = state.permits.find(p => p.id === id);
@@ -137,36 +134,59 @@
         saveState();
         renderAll();
         toast('Pin location saved manually.');
+        return;
+      }
+
+      if (corridorMode === 'select-street') {
+        await selectStreetAt(e.latlng);
+        return;
+      }
+
+      if (corridorMode === 'select-section') {
+        chooseSectionPoint(e.latlng);
       }
     });
   }
 
   function initStatusFilters() {
-    els.statusFilters.innerHTML = STATUS_VALUES.map(s => {
-      const checked = s === 'Application' || s === 'Upcoming' || s === 'Active' || s === 'Closed';
-      return `<label class="chip"><input type="checkbox" data-status="${escapeHtml(s)}" ${checked ? 'checked':''}>${escapeHtml(s)}</label>`;
-    }).join('');
+    els.statusFilters.innerHTML = STATUS_VALUES.map(s => `<label class="status-chip"><input type="checkbox" data-status="${escapeHtml(s)}" checked><span>${escapeHtml(s)}</span></label>`).join('');
   }
 
   function bindUI() {
     els.connectFolderBtn.addEventListener('click', connectOrSyncFolder);
     els.filePicker.addEventListener('change', async e => {
-      const names = [...e.target.files]
-        .filter(f => f.name.toLowerCase().endsWith('.pdf'))
-        .map(f => ({ name:f.name, relativePath:f.webkitRelativePath || f.name }));
+      const names = [...e.target.files].filter(f => f.name.toLowerCase().endsWith('.pdf')).map(f => ({ name:f.name, relativePath:f.webkitRelativePath || f.name }));
       await importNames(names);
       e.target.value = '';
     });
 
-    els.exportBtn.addEventListener('click', exportBackup);
-    els.importBackup.addEventListener('change', importBackup);
-    els.exportCsvBtn.addEventListener('click', exportCsv);
-    els.clearAllBtn.addEventListener('click', clearAllData);
-    els.fitAllBtn.addEventListener('click', fitAll);
-    els.drawCorridorBtn.addEventListener('click', () => {
-      new L.Draw.Polyline(map, { shapeOptions:{ color:'#4db6ff', weight:5, opacity:.9 } }).enable();
-      toast('Click along the route; click the last point again to finish.');
+    els.dataMenuBtn.addEventListener('click', () => toggleDataMenu());
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.menu-wrap')) toggleDataMenu(false);
     });
+    els.exportBtn.addEventListener('click', () => { toggleDataMenu(false); exportBackup(); });
+    els.importBackup.addEventListener('change', e => { toggleDataMenu(false); importBackup(e); });
+    els.exportCsvBtn.addEventListener('click', () => { toggleDataMenu(false); exportCsv(); });
+    els.clearAllBtn.addEventListener('click', () => { toggleDataMenu(false); clearAllData(); });
+
+    els.fitAllBtn.addEventListener('click', fitAll);
+    els.addCorridorBtn.addEventListener('click', () => { els.corridorActions.hidden = !els.corridorActions.hidden; });
+    els.selectStreetCorridorBtn.addEventListener('click', startStreetCorridorMode);
+    els.drawCorridorBtn.addEventListener('click', startCustomCorridorMode);
+    els.cancelCorridorModeBtn.addEventListener('click', cancelCorridorMode);
+    els.wholeStreetBtn.addEventListener('click', chooseWholeStreet);
+    els.streetSectionBtn.addEventListener('click', startStreetSectionMode);
+    els.streetScopeDialog.addEventListener('close', () => {
+      if (els.streetScopeDialog.returnValue === 'cancel' && selectedStreet && !pendingCorridor) cancelCorridorMode();
+    });
+    els.corridorDialog.addEventListener('close', () => {
+      if (els.corridorDialog.returnValue === 'cancel') {
+        pendingCorridor = null;
+        currentCorridorId = null;
+        clearCorridorPreview();
+      }
+    });
+    els.corridorForm.addEventListener('submit', saveCorridorForm);
 
     ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
     ['searchFilter','dateFrom','dateTo','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter']
@@ -182,32 +202,45 @@
     els.archivePermitBtn.addEventListener('click', archiveCurrentPermit);
     els.deletePermitBtn.addEventListener('click', deleteCurrentPermit);
 
-    els.corridorForm.addEventListener('submit', saveCorridorForm);
     els.showUnlocatedBtn.addEventListener('click', showUnlocated);
     els.closeUnlocatedBtn.addEventListener('click', () => els.unlocatedDialog.close());
+    els.mapKeyToggle.addEventListener('click', () => {
+      const show = els.mapKeyBody.hidden;
+      els.mapKeyBody.hidden = !show;
+      els.mapKeyToggle.setAttribute('aria-expanded', String(show));
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && corridorMode) {
+        e.preventDefault();
+        cancelCorridorMode();
+      }
+    }, true);
 
     window.addEventListener('dragenter', e => { e.preventDefault(); els.dropZone.classList.add('visible'); });
     window.addEventListener('dragover', e => { e.preventDefault(); els.dropZone.classList.add('visible'); });
-    window.addEventListener('dragleave', e => {
-      if (e.target === document.documentElement || e.target === document.body) els.dropZone.classList.remove('visible');
-    });
+    window.addEventListener('dragleave', e => { if (e.target === document.documentElement || e.target === document.body) els.dropZone.classList.remove('visible'); });
     window.addEventListener('drop', handleDrop);
+  }
+
+  function toggleDataMenu(force) {
+    const show = typeof force === 'boolean' ? force : els.dataMenu.hidden;
+    els.dataMenu.hidden = !show;
+    els.dataMenuBtn.setAttribute('aria-expanded', String(show));
   }
 
   async function handleDrop(e) {
     e.preventDefault();
     els.dropZone.classList.remove('visible');
     const names = [];
-    const items = [...(e.dataTransfer.items || [])];
+    const items = [...(e.dataTransfer?.items || [])];
     if (items.length && items[0].webkitGetAsEntry) {
       for (const item of items) {
-        const entry = item.webkitGetAsEntry();
+        const entry = item.webkitGetAsEntry?.();
         if (entry) await collectEntryNames(entry, '', names);
       }
     } else {
-      for (const file of [...e.dataTransfer.files]) {
-        if (file.name.toLowerCase().endsWith('.pdf')) names.push({ name:file.name, relativePath:file.name });
-      }
+      for (const f of [...(e.dataTransfer?.files || [])]) if (f.name.toLowerCase().endsWith('.pdf')) names.push({ name:f.name, relativePath:f.webkitRelativePath || f.name });
     }
     await importNames(names);
   }
@@ -218,30 +251,28 @@
       if (entry.name.toLowerCase().endsWith('.pdf')) out.push({ name:entry.name, relativePath:path });
       return;
     }
-    if (!entry.isDirectory) return;
-    const reader = entry.createReader();
-    while (true) {
-      const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
-      if (!batch.length) break;
-      for (const child of batch) await collectEntryNames(child, path, out);
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((resolve,reject) => reader.readEntries(resolve,reject));
+        for (const child of batch) await collectEntryNames(child, path, out);
+      } while (batch.length);
     }
   }
 
   async function connectOrSyncFolder() {
     try {
       if (!('showDirectoryPicker' in window)) {
-        toast('This browser does not support folder connection. Use Import filenames / drag-and-drop instead.');
+        toast('This browser does not support folder connection. Use Import filenames or drag-and-drop instead.');
         return;
       }
       if (!folderHandle) {
         folderHandle = await window.showDirectoryPicker({ mode:'read' });
         await idbSet('permitFolder', folderHandle);
-      } else {
-        const permission = await verifyPermission(folderHandle);
-        if (!permission) {
-          folderHandle = await window.showDirectoryPicker({ mode:'read' });
-          await idbSet('permitFolder', folderHandle);
-        }
+      } else if (!(await verifyPermission(folderHandle))) {
+        folderHandle = await window.showDirectoryPicker({ mode:'read' });
+        await idbSet('permitFolder', folderHandle);
       }
       updateFolderButton();
       const names = [];
@@ -255,12 +286,8 @@
   async function scanDirectoryHandle(handle, parentPath, out) {
     for await (const [name, child] of handle.entries()) {
       const path = parentPath ? `${parentPath}/${name}` : name;
-      if (child.kind === 'directory') {
-        await scanDirectoryHandle(child, path, out);
-      } else if (name.toLowerCase().endsWith('.pdf')) {
-        // Intentionally do not call child.getFile(). Filename only.
-        out.push({ name, relativePath:path });
-      }
+      if (child.kind === 'directory') await scanDirectoryHandle(child, path, out);
+      else if (name.toLowerCase().endsWith('.pdf')) out.push({ name, relativePath:path }); // filename only; never child.getFile()
     }
   }
 
@@ -279,7 +306,7 @@
       if (!opts.silent) toast('No PDF filenames found.');
       return;
     }
-    let added = 0, known = 0, invalid = 0;
+    let added=0, known=0, invalid=0;
     for (const entry of entries) {
       const parsed = parsePermitFilename(entry.name);
       if (!parsed) { invalid++; continue; }
@@ -290,31 +317,16 @@
         continue;
       }
       state.permits.push({
-        id: cryptoRandomId('permit'),
-        sourceFilename:entry.name,
-        relativePath:entry.relativePath || entry.name,
-        addressNumber:parsed.addressNumber,
-        street:parsed.street,
-        workType:parsed.workType,
-        contractor:parsed.contractor,
-        permitNumber:'',
-        status:'Application',
-        startDate:'',
-        endDate:'',
-        rowImpact:'',
-        notes:'',
-        lat:null,
-        lng:null,
-        matchMethod:'',
-        matchedFullAddr:'',
-        importedAt:new Date().toISOString(),
-        updatedAt:new Date().toISOString()
+        id:cryptoRandomId('permit'), sourceFilename:entry.name, relativePath:entry.relativePath || entry.name,
+        addressNumber:parsed.addressNumber, street:parsed.street, workType:parsed.workType, contractor:parsed.contractor,
+        permitNumber:'', status:'Upcoming', archived:false, startDate:'', endDate:'', rowImpact:'', notes:'',
+        lat:null, lng:null, matchMethod:'', matchedFullAddr:'', importedAt:new Date().toISOString(), updatedAt:new Date().toISOString()
       });
       added++;
     }
     saveState();
     refreshFilterOptions();
-    await locateUnlocatedPermits({ quiet:true, onlyRecent:true });
+    await locateUnlocatedPermits({ quiet:true });
     renderAll();
     if (!opts.silent) toast(`${added} added • ${known} already known${invalid ? ` • ${invalid} filename${invalid===1?'':'s'} skipped`:''}. No PDF contents read.`);
   }
@@ -324,21 +336,13 @@
     const base = filename.replace(/\.pdf$/i, '');
     const parts = base.split(' - ');
     if (parts.length < 4) return null;
-    return {
-      addressNumber:parts[0],
-      street:parts[1],
-      workType:parts[2],
-      contractor:parts.slice(3).join(' - ')
-    };
+    return { addressNumber:parts[0], street:parts[1], workType:parts[2], contractor:parts.slice(3).join(' - ') };
   }
 
   async function locateUnlocatedPermits({ quiet=false }={}) {
     const queue = state.permits.filter(p => !isFiniteNumber(p.lat) || !isFiniteNumber(p.lng));
-    let located = 0;
-    for (const permit of queue) {
-      const ok = await locatePermit(permit, false, true);
-      if (ok) located++;
-    }
+    let located=0;
+    for (const permit of queue) if (await locatePermit(permit,false,true)) located++;
     saveState();
     if (!quiet && located) toast(`Located ${located} permit${located===1?'':'s'} using Boulder public address data.`);
   }
@@ -348,16 +352,11 @@
     try {
       const result = await queryAddressPoint(permit.addressNumber, permit.street);
       if (!result) {
-        permit.matchMethod = 'unlocated';
-        permit.matchedFullAddr = '';
+        permit.matchMethod='unlocated'; permit.matchedFullAddr='';
         if (!quiet) toast(`No confident public-address match for ${displayAddress(permit)}.`);
         return false;
       }
-      permit.lat = result.lat;
-      permit.lng = result.lng;
-      permit.matchMethod = 'Boulder Address Points';
-      permit.matchedFullAddr = result.fullAddr || '';
-      permit.updatedAt = new Date().toISOString();
+      permit.lat=result.lat; permit.lng=result.lng; permit.matchMethod='Boulder Address Points'; permit.matchedFullAddr=result.fullAddr || ''; permit.updatedAt=new Date().toISOString();
       return true;
     } catch (err) {
       permit.matchMethod = permit.matchMethod || 'lookup unavailable';
@@ -371,617 +370,563 @@
     if (addressLookupCache.has(cacheKey)) return addressLookupCache.get(cacheKey);
     const addressNumber = String(addressNumberRaw).trim().replace(/'/g,"''");
     const params = new URLSearchParams({
-      where:`ADDRNUM='${addressNumber}'`,
-      outFields:'FULLADDR,ADDRNUM,PREDIR,STREETNAME,STREETSUFFIX,POSTDIR,CITY,STATUS,POINTTYPE',
-      returnGeometry:'true',
-      outSR:'4326',
-      resultRecordCount:'50',
-      f:'geojson'
+      where:`ADDRNUM='${addressNumber}'`, outFields:'FULLADDR,ADDRNUM,PREDIR,STREETNAME,STREETSUFFIX,POSTDIR,CITY,STATUS,POINTTYPE',
+      returnGeometry:'true', outSR:'4326', resultRecordCount:'50', f:'geojson'
     });
     const res = await fetch(`${ADDRESS_QUERY}?${params}`);
     if (!res.ok) throw new Error(`Address service ${res.status}`);
     const data = await res.json();
     const candidates = (data.features || []).filter(f => Array.isArray(f.geometry?.coordinates));
-    if (!candidates.length) { addressLookupCache.set(cacheKey, null); return null; }
-    const scored = candidates.map(f => ({ f, score:scoreAddressCandidate(streetRaw, f.properties || {}) })).sort((a,b) => b.score-a.score);
-    if (scored[0].score < 45) { addressLookupCache.set(cacheKey, null); return null; }
+    if (!candidates.length) { addressLookupCache.set(cacheKey,null); return null; }
+    const scored = candidates.map(f => ({ f, score:scoreAddressCandidate(streetRaw,f.properties||{}) })).sort((a,b)=>b.score-a.score);
+    if (scored[0].score < 45) { addressLookupCache.set(cacheKey,null); return null; }
     const f = scored[0].f;
     const result = { lng:f.geometry.coordinates[0], lat:f.geometry.coordinates[1], fullAddr:f.properties?.FULLADDR || '' };
-    addressLookupCache.set(cacheKey, result);
+    addressLookupCache.set(cacheKey,result);
     return result;
   }
 
   function scoreAddressCandidate(sourceStreet, props) {
-    const src = normalizeMatch(sourceStreet);
-    const predir = normalizeMatch(props.PREDIR || '');
-    const name = normalizeMatch(props.STREETNAME || '');
-    const suffix = normalizeMatch(props.STREETSUFFIX || '');
-    const postdir = normalizeMatch(props.POSTDIR || '');
-    const full = [predir,name,suffix,postdir].filter(Boolean).join(' ');
-    const noSuffix = [predir,name,postdir].filter(Boolean).join(' ');
-    let score = 0;
-    if (src === full) score += 100;
-    if (src === noSuffix) score += 95;
-    if (src === name) score += 85;
-    if (full.startsWith(src + ' ')) score += 65;
-    if (noSuffix.startsWith(src + ' ')) score += 65;
-    if (name === src.replace(/^(n|s|e|w)\s+/,'')) score += 55;
-    if ((props.CITY || '').toLowerCase() === 'boulder') score += 10;
-    if ((props.STATUS || '').toLowerCase() === 'current') score += 5;
-    if ((props.POINTTYPE || '').toLowerCase() === 'building') score += 3;
+    const src=normalizeMatch(sourceStreet), predir=normalizeMatch(props.PREDIR||''), name=normalizeMatch(props.STREETNAME||''), suffix=normalizeMatch(props.STREETSUFFIX||''), postdir=normalizeMatch(props.POSTDIR||'');
+    const full=[predir,name,suffix,postdir].filter(Boolean).join(' '), noSuffix=[predir,name,postdir].filter(Boolean).join(' ');
+    let score=0;
+    if (src===full) score+=100; if (src===noSuffix) score+=95; if (src===name) score+=85; if (full.startsWith(src+' ')) score+=65; if (noSuffix.startsWith(src+' ')) score+=65;
+    if (name===src.replace(/^(n|s|e|w)\s+/,'')) score+=55; if ((props.CITY||'').toLowerCase()==='boulder') score+=10; if ((props.STATUS||'').toLowerCase()==='current') score+=5; if ((props.POINTTYPE||'').toLowerCase()==='building') score+=3;
     return score;
   }
 
   async function resolveVenues() {
-    venueLayer.clearLayers();
-    venueBuildingLayer.clearLayers();
-    venueContextLayer.clearLayers();
+    venueLayer.clearLayers(); venueBuildingLayer.clearLayers(); venueContextLayer.clearLayers(); venueRuntime.clear();
     for (const venue of VENUES) {
       try {
         const loc = await queryAddressPoint(venue.addressNumber, venue.street);
         if (!loc) continue;
-        venue.lat = loc.lat; venue.lng = loc.lng; venue.matchedFullAddr = loc.fullAddr;
-        venueRuntime.set(venue.id, venue);
+        venue.lat=loc.lat; venue.lng=loc.lng; venue.matchedFullAddr=loc.fullAddr; venueRuntime.set(venue.id,venue);
         addVenueMarker(venue);
-        L.circle([venue.lat,venue.lng], { radius:VENUE_NEAR_FEET*0.3048, color:'#e7ff66', weight:1, opacity:.22, fillColor:'#e7ff66', fillOpacity:.035, dashArray:'4 5', interactive:false }).addTo(venueContextLayer);
+        L.circle([venue.lat,venue.lng], { radius:VENUE_NEAR_FEET*.3048, color:'#b39a36', weight:1, opacity:.35, fillColor:'#b39a36', fillOpacity:.035, dashArray:'4 5', interactive:false }).addTo(venueContextLayer);
         await addVenueBuilding(venue);
-      } catch (err) {
-        console.warn('Venue lookup failed', venue.name, err);
-      }
+      } catch (err) { console.warn('Venue lookup failed', venue.name, err); }
     }
     updateLayerVisibility();
   }
 
   function addVenueMarker(venue) {
-    const icon = L.divIcon({ className:'', html:'<div class="venue-marker"><span>S</span></div>', iconSize:[22,22], iconAnchor:[11,11] });
-    const marker = L.marker([venue.lat, venue.lng], { icon, zIndexOffset:500 });
-    marker.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row">${escapeHtml(venue.address)}</div><div class="popup-row">${escapeHtml(venue.uses)}</div>`);
-    marker.addTo(venueLayer);
+    const icon=L.divIcon({ className:'', html:'<div class="venue-marker"><span></span></div>', iconSize:[22,22], iconAnchor:[11,11] });
+    const marker=L.marker([venue.lat,venue.lng],{icon,zIndexOffset:500});
+    marker.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Address</span>${escapeHtml(venue.address)}</div><div class="popup-row"><span class="popup-label">Use</span>${escapeHtml(venue.uses)}</div>`).addTo(venueLayer);
   }
 
   async function addVenueBuilding(venue) {
-    const params = new URLSearchParams({
-      where:'1=1',
-      geometry:`${venue.lng},${venue.lat}`,
-      geometryType:'esriGeometryPoint',
-      inSR:'4326',
-      spatialRel:'esriSpatialRelIntersects',
-      distance:'120',
-      units:'esriSRUnit_Meter',
-      outFields:'FACILITYID,SHORTNAME,LONGNAME,BLDGTYPE',
-      returnGeometry:'true',
-      outSR:'4326',
-      resultRecordCount:'100',
-      f:'geojson'
-    });
-    const res = await fetch(`${BUILDING_QUERY}?${params}`);
-    if (!res.ok) throw new Error(`Building service ${res.status}`);
-    const data = await res.json();
-    const features = data.features || [];
-    if (!features.length) return;
-    const point = turf.point([venue.lng, venue.lat]);
-    const ranked = features.map(f => ({ f, score:scoreBuilding(venue, point, f) })).sort((a,b) => b.score-a.score);
-    const best = ranked[0]?.f;
-    if (!best) return;
-    const facilityId = best.properties?.FACILITYID || `${venue.id}:${JSON.stringify(best.geometry).slice(0,100)}`;
-    if ([...venueBuildingLayer.getLayers()].some(l => l.options?.facilityId === facilityId)) return;
-    const layer = L.geoJSON(best, {
-      style:{ color:'#e7ff66', weight:2, fillColor:'#e7ff66', fillOpacity:.28 },
-      onEachFeature:(_f,l) => l.bindPopup(`<div class="popup-title">Sundance venue building</div><div class="popup-row">${escapeHtml(venue.name)}</div>`)
-    });
-    layer.options.facilityId = facilityId;
-    layer.eachLayer(l => { l.options.facilityId = facilityId; });
-    layer.addTo(venueBuildingLayer);
+    const params=new URLSearchParams({ where:'1=1', geometry:`${venue.lng},${venue.lat}`, geometryType:'esriGeometryPoint', inSR:'4326', spatialRel:'esriSpatialRelIntersects', distance:'120', units:'esriSRUnit_Meter', outFields:'FACILITYID,SHORTNAME,LONGNAME,BLDGTYPE', returnGeometry:'true', outSR:'4326', resultRecordCount:'100', f:'geojson' });
+    const res=await fetch(`${BUILDING_QUERY}?${params}`); if (!res.ok) throw new Error(`Building service ${res.status}`);
+    const data=await res.json(), features=data.features||[]; if (!features.length) return;
+    const point=turf.point([venue.lng,venue.lat]);
+    const best=features.map(f=>({f,score:scoreBuilding(venue,point,f)})).sort((a,b)=>b.score-a.score)[0]?.f; if (!best) return;
+    const facilityId=best.properties?.FACILITYID || `${venue.id}:${JSON.stringify(best.geometry).slice(0,100)}`;
+    if ([...venueBuildingLayer.getLayers()].some(l=>l.options?.facilityId===facilityId)) return;
+    const layer=L.geoJSON(best,{ style:{ color:'#a8902f', weight:1.5, fillColor:'#d7c66d', fillOpacity:.32 }, onEachFeature:(_f,l)=>l.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Layer</span>Venue building</div>`) });
+    layer.options.facilityId=facilityId; layer.eachLayer(l=>{l.options.facilityId=facilityId;}); layer.addTo(venueBuildingLayer);
   }
 
   function scoreBuilding(venue, point, feature) {
-    let score = 0;
-    try { if (turf.booleanPointInPolygon(point, feature)) score += 200; } catch {}
-    const label = normalizeMatch(`${feature.properties?.LONGNAME || ''} ${feature.properties?.SHORTNAME || ''}`);
-    for (const token of normalizeMatch(venue.name).split(' ').filter(t => t.length > 3)) if (label.includes(token)) score += 15;
-    try {
-      const line = turf.polygonToLine(feature);
-      const d = turf.pointToLineDistance(point, line, { units:'meters' });
-      score -= Math.min(d,150);
-    } catch {}
+    let score=0; try { if (turf.booleanPointInPolygon(point,feature)) score+=200; } catch {}
+    const label=normalizeMatch(`${feature.properties?.LONGNAME||''} ${feature.properties?.SHORTNAME||''}`);
+    for (const token of normalizeMatch(venue.name).split(' ').filter(t=>t.length>3)) if (label.includes(token)) score+=15;
+    try { score-=Math.min(turf.pointToLineDistance(point,turf.polygonToLine(feature),{units:'meters'}),150); } catch {}
     return score;
   }
 
+  // ---------------- Corridor workflow ----------------
+
+  function startStreetCorridorMode() {
+    cancelCorridorMode(true);
+    els.corridorActions.hidden=true;
+    corridorMode='select-street'; selectedStreet=null; sectionStart=null; pendingCorridor=null;
+    showCorridorMode('Select a street','Click a Boulder street on the map. Pas de Deux will use the public street centerline, not a hand-drawn approximation.');
+  }
+
+  function startCustomCorridorMode() {
+    cancelCorridorMode(true);
+    els.corridorActions.hidden=true;
+    corridorMode='draw-custom'; pendingCorridor=null;
+    showCorridorMode('Draw a custom route','Click along the route. Click the last point again to finish, or Cancel / Esc to leave without creating anything.');
+    activeDrawHandler = new L.Draw.Polyline(map,{ shapeOptions:{ color:'#2e6f9e', weight:5, opacity:.9 }, guidelineDistance:14 });
+    activeDrawHandler.enable();
+  }
+
+  async function selectStreetAt(latlng) {
+    const token=++corridorRequestToken;
+    showCorridorMode('Finding street…','Matching your click to Boulder public street centerlines.');
+    try {
+      const selected=await queryNearestStreet(latlng);
+      if (token!==corridorRequestToken || corridorMode!=='select-street') return;
+      if (!selected) {
+        showCorridorMode('Select a street','No street centerline was close enough to that click. Try again closer to the roadway.');
+        return;
+      }
+      selectedStreet=selected;
+      showCorridorMode('Loading street…',`Loading ${selected.label} centerline segments.`);
+      selectedStreet.features=await queryWholeStreet(selected.feature);
+      if (token!==corridorRequestToken || corridorMode!=='select-street') return;
+      if (!selectedStreet.features.length) {
+        showCorridorMode('Select a street','The street was identified, but its geometry could not be loaded. Try again.');
+        return;
+      }
+      previewStreetFeatures(selectedStreet.features,false);
+      els.selectedStreetName.textContent=selectedStreet.label;
+      els.streetScopeDialog.returnValue='';
+      els.streetScopeDialog.showModal();
+      els.corridorModeBar.hidden=true;
+    } catch (err) {
+      console.warn('Street selection failed',err);
+      showCorridorMode('Select a street','Street data could not be loaded. Try again, or use Draw custom route.');
+    }
+  }
+
+  async function queryNearestStreet(latlng) {
+    const geometry=JSON.stringify({ x:latlng.lng, y:latlng.lat, spatialReference:{wkid:4326} });
+    const params=new URLSearchParams({
+      where:"LIFECYCLE='Active'", geometry, geometryType:'esriGeometryPoint', inSR:'4326', spatialRel:'esriSpatialRelIntersects', distance:'120', units:'esriSRUnit_Foot',
+      outFields:'OBJECTID,LIFECYCLE,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS,CENTERLINE', returnGeometry:'true', outSR:'4326', resultRecordCount:'30', f:'geojson'
+    });
+    const res=await fetch(`${STREET_QUERY}?${params}`); if (!res.ok) throw new Error(`Street service ${res.status}`);
+    const data=await res.json(), point=turf.point([latlng.lng,latlng.lat]);
+    const candidates=(data.features||[]).filter(f=>f.geometry && (f.geometry.type==='LineString' || f.geometry.type==='MultiLineString'));
+    if (!candidates.length) return null;
+    const ranked=[];
+    for (const f of candidates) {
+      let distance=Infinity;
+      for (const line of featureLines(f)) {
+        try { distance=Math.min(distance,turf.pointToLineDistance(point,line,{units:'feet'})); } catch {}
+      }
+      ranked.push({f,distance});
+    }
+    ranked.sort((a,b)=>a.distance-b.distance);
+    if (!Number.isFinite(ranked[0]?.distance) || ranked[0].distance>140) return null;
+    const feature=ranked[0].f;
+    return { feature, label:streetLabel(feature.properties||{}), key:streetKey(feature.properties||{}), distanceFeet:ranked[0].distance, features:[] };
+  }
+
+  async function queryWholeStreet(seedFeature) {
+    const name=String(seedFeature.properties?.STREETNAME||'').replace(/'/g,"''");
+    if (!name) return [];
+    const params=new URLSearchParams({ where:`STREETNAME='${name}' AND LIFECYCLE='Active'`, outFields:'OBJECTID,LIFECYCLE,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS,CENTERLINE', returnGeometry:'true', outSR:'4326', resultRecordCount:'1000', f:'geojson' });
+    const res=await fetch(`${STREET_QUERY}?${params}`); if (!res.ok) throw new Error(`Street service ${res.status}`);
+    const data=await res.json();
+    const key=streetKey(seedFeature.properties||{});
+    return (data.features||[]).filter(f=>streetKey(f.properties||{})===key && f.geometry);
+  }
+
+  function streetKey(props) {
+    return [props.PREDIR||'',props.STREETNAME||'',props.STREETTYPE||'',props.SUFFIX||''].map(v=>String(v).trim().toUpperCase()).join('|');
+  }
+
+  function streetLabel(props) {
+    return [props.PREDIR,props.STREETNAME,props.STREETTYPE,props.SUFFIX].map(v=>String(v||'').trim()).filter(Boolean).join(' ');
+  }
+
+  function chooseWholeStreet() {
+    if (!selectedStreet?.features?.length) return;
+    pendingCorridor={ sourceType:'street', scope:'Entire street', streetLabel:selectedStreet.label, streetKey:selectedStreet.key, paths:featuresToPaths(selectedStreet.features) };
+    els.streetScopeDialog.returnValue='default';
+    els.streetScopeDialog.close();
+    exitCorridorMapMode(false);
+    prepareCorridorForm({ suggestedName:selectedStreet.label });
+  }
+
+  function startStreetSectionMode() {
+    if (!selectedStreet?.features?.length) return;
+    els.streetScopeDialog.returnValue='default';
+    els.streetScopeDialog.close();
+    corridorMode='select-section'; sectionStart=null;
+    showCorridorMode(`Select section — ${selectedStreet.label}`,'Click the first end of the street section. Then click the second end. Both clicks will snap to the selected street.');
+    previewStreetFeatures(selectedStreet.features,false);
+  }
+
+  function chooseSectionPoint(latlng) {
+    if (!selectedStreet?.features?.length) return;
+    const snapped=snapPointToStreet(latlng,selectedStreet.features);
+    if (!snapped) { toast('Could not snap that point to the selected street.'); return; }
+    if (!sectionStart) {
+      sectionStart=snapped;
+      corridorEndpointLayer.clearLayers();
+      L.circleMarker([snapped.lat,snapped.lng],{radius:6,color:'#17324d',weight:3,fillColor:'#fff',fillOpacity:1}).addTo(corridorEndpointLayer);
+      showCorridorMode(`Select section — ${selectedStreet.label}`,'Start set. Click the other end of the section, or Cancel / Esc.');
+      return;
+    }
+    const sectionEnd=snapped;
+    L.circleMarker([sectionEnd.lat,sectionEnd.lng],{radius:6,color:'#17324d',weight:3,fillColor:'#fff',fillOpacity:1}).addTo(corridorEndpointLayer);
+    const paths=clipStreetToSection(selectedStreet.features,sectionStart,sectionEnd);
+    if (!paths.length) { toast('That section could not be resolved. Try the two endpoints again.'); sectionStart=null; corridorEndpointLayer.clearLayers(); return; }
+    pendingCorridor={ sourceType:'street', scope:'Selected section', streetLabel:selectedStreet.label, streetKey:selectedStreet.key, paths };
+    corridorPreviewLayer.clearLayers();
+    previewPaths(paths,true);
+    exitCorridorMapMode(false);
+    prepareCorridorForm({ suggestedName:selectedStreet.label });
+  }
+
+  function snapPointToStreet(latlng,features) {
+    const point=turf.point([latlng.lng,latlng.lat]);
+    let best=null;
+    for (const feature of features) {
+      for (const line of featureLines(feature)) {
+        try {
+          const distance=turf.pointToLineDistance(point,line,{units:'feet'});
+          if (!best || distance<best.distance) {
+            const snapped=turf.nearestPointOnLine(line,point,{units:'feet'});
+            best={ distance, lat:snapped.geometry.coordinates[1], lng:snapped.geometry.coordinates[0] };
+          }
+        } catch {}
+      }
+    }
+    return best;
+  }
+
+  function clipStreetToSection(features,a,b) {
+    const padMeters=55;
+    const midLat=(a.lat+b.lat)/2;
+    const padLat=padMeters/111320;
+    const padLng=padMeters/(111320*Math.cos(midLat*Math.PI/180));
+    const bbox=[Math.min(a.lng,b.lng)-padLng,Math.min(a.lat,b.lat)-padLat,Math.max(a.lng,b.lng)+padLng,Math.max(a.lat,b.lat)+padLat];
+    const paths=[];
+    for (const feature of features) {
+      for (const line of featureLines(feature)) {
+        try {
+          const clipped=turf.bboxClip(line,bbox);
+          if (clipped?.geometry?.type==='LineString' && clipped.geometry.coordinates.length>1) paths.push(clipped.geometry.coordinates.map(([lng,lat])=>[lat,lng]));
+          if (clipped?.geometry?.type==='MultiLineString') for (const coords of clipped.geometry.coordinates) if (coords.length>1) paths.push(coords.map(([lng,lat])=>[lat,lng]));
+        } catch {}
+      }
+    }
+    return dedupePaths(paths);
+  }
+
+  function featureLines(feature) {
+    if (!feature?.geometry) return [];
+    if (feature.geometry.type==='LineString') return [turf.lineString(feature.geometry.coordinates)];
+    if (feature.geometry.type==='MultiLineString') return feature.geometry.coordinates.map(coords=>turf.lineString(coords));
+    return [];
+  }
+
+  function featuresToPaths(features) {
+    const paths=[];
+    for (const f of features) {
+      if (f.geometry?.type==='LineString') paths.push(f.geometry.coordinates.map(([lng,lat])=>[lat,lng]));
+      else if (f.geometry?.type==='MultiLineString') for (const coords of f.geometry.coordinates) paths.push(coords.map(([lng,lat])=>[lat,lng]));
+    }
+    return dedupePaths(paths.filter(p=>p.length>1));
+  }
+
+  function dedupePaths(paths) {
+    const seen=new Set();
+    return paths.filter(path=>{
+      const key=path.map(([lat,lng])=>`${lat.toFixed(6)},${lng.toFixed(6)}`).join(';');
+      const rev=[...path].reverse().map(([lat,lng])=>`${lat.toFixed(6)},${lng.toFixed(6)}`).join(';');
+      if (seen.has(key)||seen.has(rev)) return false;
+      seen.add(key); return true;
+    });
+  }
+
+  function previewStreetFeatures(features,strong) { previewPaths(featuresToPaths(features),strong); }
+
+  function previewPaths(paths,strong=false) {
+    corridorPreviewLayer.clearLayers();
+    for (const path of paths) L.polyline(path,{ color:strong?'#17324d':'#2e6f9e', weight:strong?7:5, opacity:strong?.92:.48, className:'street-preview', interactive:false }).addTo(corridorPreviewLayer);
+  }
+
+  function prepareCorridorForm({suggestedName}) {
+    currentCorridorId=null;
+    els.corridorForm.reset();
+    els.corridorForm.elements.name.value=suggestedName || 'Corridor';
+    els.corridorForm.elements.priority.value='Primary';
+    els.corridorForm.elements.bufferFeet.value=150;
+    els.corridorDialog.returnValue='';
+    els.corridorDialog.showModal();
+  }
+
+  function showCorridorMode(title,text) {
+    els.corridorModeTitle.textContent=title;
+    els.corridorModeText.textContent=text;
+    els.corridorModeBar.hidden=false;
+    document.body.classList.add('mode-selecting');
+  }
+
+  function exitCorridorMapMode(clearPreview=true) {
+    if (activeDrawHandler) { try { activeDrawHandler.disable(); } catch {} activeDrawHandler=null; }
+    corridorMode=null; sectionStart=null;
+    els.corridorModeBar.hidden=true;
+    document.body.classList.remove('mode-selecting');
+    corridorEndpointLayer.clearLayers();
+    if (clearPreview) corridorPreviewLayer.clearLayers();
+  }
+
+  function clearCorridorPreview() {
+    corridorPreviewLayer.clearLayers(); corridorEndpointLayer.clearLayers(); selectedStreet=null; sectionStart=null;
+  }
+
+  function cancelCorridorMode(silent=false) {
+    corridorRequestToken++;
+    exitCorridorMapMode(true);
+    pendingCorridor=null; selectedStreet=null; sectionStart=null;
+    if (els.streetScopeDialog?.open) { els.streetScopeDialog.returnValue='default'; els.streetScopeDialog.close(); }
+    if (els.corridorDialog?.open && !currentCorridorId) { els.corridorDialog.returnValue='cancel'; els.corridorDialog.close(); }
+    if (!silent) toast('Corridor selection cancelled.');
+  }
+
+  function saveCorridorForm(e) {
+    e.preventDefault();
+    const form=new FormData(els.corridorForm);
+    if (currentCorridorId) {
+      const c=state.corridors.find(x=>x.id===currentCorridorId); if (!c) return;
+      c.name=String(form.get('name')||'Corridor'); c.priority=String(form.get('priority')||'Primary'); c.bufferFeet=Number(form.get('bufferFeet')||0); c.notes=String(form.get('notes')||''); c.updatedAt=new Date().toISOString();
+    } else if (pendingCorridor?.paths?.length) {
+      state.corridors.push({ id:cryptoRandomId('corridor'), name:String(form.get('name')||pendingCorridor.streetLabel||'Corridor'), priority:String(form.get('priority')||'Primary'), bufferFeet:Number(form.get('bufferFeet')||0), notes:String(form.get('notes')||''), sourceType:pendingCorridor.sourceType, scope:pendingCorridor.scope, streetLabel:pendingCorridor.streetLabel||'', streetKey:pendingCorridor.streetKey||'', paths:pendingCorridor.paths, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
+    }
+    currentCorridorId=null; pendingCorridor=null; selectedStreet=null;
+    saveState();
+    els.corridorDialog.returnValue='default'; els.corridorDialog.close();
+    clearCorridorPreview(); rebuildCorridors(); renderAll(); toast('Corridor saved.');
+  }
+
   function rebuildCorridors() {
-    corridorLayer.clearLayers();
-    corridorRuntime.clear();
+    corridorLayer.clearLayers(); corridorRuntime.clear();
     for (const corridor of state.corridors) addCorridorRuntime(corridor);
     renderCorridorList();
   }
 
   function addCorridorRuntime(corridor) {
-    const group = L.layerGroup();
-    const latlngs = corridor.latlngs.map(([lat,lng]) => L.latLng(lat,lng));
-    let bufferLayer = null;
-    const bufferFeet = Number(corridor.bufferFeet || 0);
-    if (bufferFeet > 0 && latlngs.length > 1) {
+    const group=L.layerGroup();
+    const paths=getCorridorPaths(corridor);
+    const bufferFeet=Number(corridor.bufferFeet||0);
+    if (bufferFeet>0 && paths.length) {
       try {
-        const line = turf.lineString(latlngs.map(ll => [ll.lng,ll.lat]));
-        const buffered = turf.buffer(line, bufferFeet, { units:'feet' });
-        if (buffered) bufferLayer = L.geoJSON(buffered, { style:{ color:'#4db6ff', weight:1, opacity:.2, fillColor:'#4db6ff', fillOpacity:.08, dashArray:'4 5' } }).addTo(group);
+        const geo=paths.length===1 ? turf.lineString(paths[0].map(([lat,lng])=>[lng,lat])) : turf.multiLineString(paths.map(path=>path.map(([lat,lng])=>[lng,lat])));
+        const buffered=turf.buffer(geo,bufferFeet,{units:'feet'});
+        if (buffered) L.geoJSON(buffered,{ style:{ color:'#2e6f9e',weight:1,opacity:.22,fillColor:'#2e6f9e',fillOpacity:.055,dashArray:'4 5' }, interactive:false }).addTo(group);
       } catch {}
     }
-    const line = L.polyline(latlngs, { color:'#4db6ff', weight:corridor.priority==='Primary'?6:4, opacity:.9 }).addTo(group);
-    line.bindPopup(`<div class="popup-title">${escapeHtml(corridor.name)}</div><div class="popup-row"><span class="popup-label">Priority</span>${escapeHtml(corridor.priority)}</div><div class="popup-row"><span class="popup-label">Buffer</span>${escapeHtml(String(corridor.bufferFeet || 0))} ft</div>`);
-    group.addTo(corridorLayer);
-    corridorRuntime.set(corridor.id, { group, line, bufferLayer });
+    const lines=[];
+    for (const path of paths) {
+      const line=L.polyline(path,{ color:'#2e6f9e',weight:corridor.priority==='Primary'?5:3.5,opacity:.88 }).addTo(group);
+      line.bindPopup(`<div class="popup-title">${escapeHtml(corridor.name)}</div><div class="popup-row"><span class="popup-label">Type</span>${escapeHtml(corridor.scope||'Corridor')}</div><div class="popup-row"><span class="popup-label">Priority</span>${escapeHtml(corridor.priority)}</div><div class="popup-row"><span class="popup-label">Context</span>${escapeHtml(String(corridor.bufferFeet||0))} ft</div>`);
+      lines.push(line);
+    }
+    group.addTo(corridorLayer); corridorRuntime.set(corridor.id,{group,lines});
   }
 
   function renderCorridorList() {
-    if (!state.corridors.length) {
-      els.corridorList.innerHTML = '<div class="hint">No corridors drawn yet.</div>';
-      return;
-    }
-    els.corridorList.innerHTML = state.corridors.map(c => `
-      <div class="mini-card" data-corridor="${escapeHtml(c.id)}">
-        <div class="mini-card-main"><div class="mini-card-name">${escapeHtml(c.name)}</div><div class="mini-card-meta">${escapeHtml(c.priority)} • ${escapeHtml(String(c.bufferFeet||0))} ft context buffer</div></div>
-        <div class="mini-card-actions">
-          <button class="tiny-btn" data-action="edit">Edit</button>
-          <button class="tiny-btn" data-action="shape">Shape</button>
-          <button class="tiny-btn" data-action="delete">×</button>
-        </div>
-      </div>`).join('');
-    els.corridorList.querySelectorAll('.mini-card').forEach(card => {
-      card.addEventListener('click', e => {
-        const btn = e.target.closest('button');
-        if (!btn) return;
-        const id = card.dataset.corridor;
-        if (btn.dataset.action === 'edit') editCorridor(id);
-        if (btn.dataset.action === 'shape') toggleCorridorShape(id, btn);
-        if (btn.dataset.action === 'delete') deleteCorridor(id);
-      });
-    });
+    if (!state.corridors.length) { els.corridorList.innerHTML='<div class="empty-state">No corridors designated yet.</div>'; return; }
+    els.corridorList.innerHTML=state.corridors.map(c=>`<div class="record-card" data-corridor="${escapeHtml(c.id)}"><div class="record-card-head"><div><div class="record-card-name">${escapeHtml(c.name)}</div><div class="record-card-meta">${escapeHtml(c.scope||'Custom route')} • ${escapeHtml(c.priority)} • ${escapeHtml(String(c.bufferFeet||0))} ft context</div></div><div class="record-card-actions"><button class="mini-action" data-action="zoom">View</button><button class="mini-action" data-action="edit">Edit</button><button class="mini-action" data-action="delete">×</button></div></div></div>`).join('');
+    els.corridorList.querySelectorAll('.record-card').forEach(card=>card.addEventListener('click',e=>{
+      const btn=e.target.closest('button'); if (!btn) return; const id=card.dataset.corridor;
+      if (btn.dataset.action==='edit') editCorridor(id); if (btn.dataset.action==='zoom') zoomCorridor(id); if (btn.dataset.action==='delete') deleteCorridor(id);
+    }));
   }
 
   function editCorridor(id) {
-    const c = state.corridors.find(x => x.id===id); if (!c) return;
-    currentCorridorId = id;
-    pendingCorridorLatLngs = null;
-    els.corridorForm.elements.name.value = c.name;
-    els.corridorForm.elements.priority.value = c.priority;
-    els.corridorForm.elements.bufferFeet.value = c.bufferFeet;
-    els.corridorForm.elements.notes.value = c.notes || '';
-    els.corridorDialog.showModal();
+    const c=state.corridors.find(x=>x.id===id); if (!c) return;
+    currentCorridorId=id; pendingCorridor=null;
+    els.corridorForm.elements.name.value=c.name; els.corridorForm.elements.priority.value=c.priority; els.corridorForm.elements.bufferFeet.value=c.bufferFeet; els.corridorForm.elements.notes.value=c.notes||'';
+    els.corridorDialog.returnValue=''; els.corridorDialog.showModal();
   }
 
-  function toggleCorridorShape(id, btn) {
-    const runtime = corridorRuntime.get(id);
-    const c = state.corridors.find(x => x.id===id);
-    if (!runtime || !c) return;
-    if (!runtime.line.editing?.enabled()) {
-      runtime.line.editing.enable();
-      btn.textContent = 'Save';
-      toast('Drag corridor vertices, then click Save.');
-    } else {
-      runtime.line.editing.disable();
-      c.latlngs = runtime.line.getLatLngs().map(ll => [ll.lat,ll.lng]);
-      c.updatedAt = new Date().toISOString();
-      saveState();
-      rebuildCorridors();
-      renderAll();
-      toast('Corridor shape saved.');
-    }
+  function zoomCorridor(id) {
+    const c=state.corridors.find(x=>x.id===id); if (!c) return;
+    const points=getCorridorPaths(c).flat(); if (points.length) map.fitBounds(points,{padding:[55,55],maxZoom:17});
   }
 
   function deleteCorridor(id) {
-    const c = state.corridors.find(x => x.id===id); if (!c) return;
+    const c=state.corridors.find(x=>x.id===id); if (!c) return;
     if (!confirm(`Delete corridor “${c.name}”?`)) return;
-    state.corridors = state.corridors.filter(x => x.id!==id);
-    saveState();
-    rebuildCorridors();
-    renderAll();
+    state.corridors=state.corridors.filter(x=>x.id!==id); saveState(); rebuildCorridors(); renderAll();
   }
 
-  function saveCorridorForm(e) {
-    e.preventDefault();
-    const form = new FormData(els.corridorForm);
-    if (currentCorridorId) {
-      const c = state.corridors.find(x => x.id===currentCorridorId);
-      if (!c) return;
-      c.name = String(form.get('name') || 'Corridor');
-      c.priority = String(form.get('priority') || 'Primary');
-      c.bufferFeet = Number(form.get('bufferFeet') || 0);
-      c.notes = String(form.get('notes') || '');
-      c.updatedAt = new Date().toISOString();
-    } else if (pendingCorridorLatLngs?.length > 1) {
-      state.corridors.push({
-        id:cryptoRandomId('corridor'),
-        name:String(form.get('name') || 'Corridor'),
-        priority:String(form.get('priority') || 'Primary'),
-        bufferFeet:Number(form.get('bufferFeet') || 0),
-        notes:String(form.get('notes') || ''),
-        latlngs:pendingCorridorLatLngs,
-        createdAt:new Date().toISOString(),
-        updatedAt:new Date().toISOString()
-      });
-    }
-    currentCorridorId = null;
-    pendingCorridorLatLngs = null;
-    saveState();
-    els.corridorDialog.close();
-    rebuildCorridors();
-    renderAll();
+  function getCorridorPaths(c) {
+    if (Array.isArray(c.paths)) return c.paths.filter(p=>Array.isArray(p)&&p.length>1);
+    if (Array.isArray(c.latlngs)&&c.latlngs.length>1) return [c.latlngs];
+    return [];
   }
 
-  function renderAll() {
-    refreshFilterOptions();
-    renderPermits();
-    renderCorridorList();
-    updateStats();
-    updateLayerVisibility();
-  }
+  // ---------------- Permits, filters, persistence ----------------
 
-  function scheduleRender() {
-    if (renderScheduled) return;
-    renderScheduled = true;
-    requestAnimationFrame(() => { renderScheduled=false; renderAll(); });
-  }
+  function renderAll() { refreshFilterOptions(); renderPermits(); renderCorridorList(); updateStats(); updateLayerVisibility(); }
+  function scheduleRender() { if (renderScheduled) return; renderScheduled=true; requestAnimationFrame(()=>{renderScheduled=false;renderAll();}); }
 
   function renderPermits() {
     permitCluster.clearLayers();
-    const visible = filteredPermits();
-    for (const permit of visible) {
-      if (!isFiniteNumber(permit.lat) || !isFiniteNumber(permit.lng)) continue;
-      const icon = L.divIcon({
-        className:'',
-        html:`<div class="permit-marker ${statusClass(permit.status)}"><span></span></div>`,
-        iconSize:[18,18], iconAnchor:[9,18], popupAnchor:[0,-16]
-      });
-      const marker = L.marker([permit.lat,permit.lng], { icon, title:displayAddress(permit) });
+    for (const permit of filteredPermits()) {
+      if (!isFiniteNumber(permit.lat)||!isFiniteNumber(permit.lng)) continue;
+      const icon=L.divIcon({ className:'', html:`<div class="permit-marker ${statusClass(permit.status)}"><span></span></div>`, iconSize:[18,18], iconAnchor:[9,18], popupAnchor:[0,-16] });
+      const marker=L.marker([permit.lat,permit.lng],{icon,title:displayAddress(permit)});
       marker.bindPopup(permitPopupHtml(permit));
-      marker.on('popupopen', e => {
-        const button = e.popup.getElement()?.querySelector('[data-edit-permit]');
-        if (button) button.addEventListener('click', () => openPermitDialog(permit.id), { once:true });
-      });
+      marker.on('popupopen',e=>{ const button=e.popup.getElement()?.querySelector('[data-edit-permit]'); if (button) button.addEventListener('click',()=>openPermitDialog(permit.id),{once:true}); });
       permitCluster.addLayer(marker);
     }
   }
 
   function permitPopupHtml(p) {
-    return `<div>
-      <div class="popup-title">${escapeHtml(displayAddress(p))}</div>
-      <div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType))}</div>
-      <div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>
-      ${p.permitNumber ? `<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}
-      <div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}</div>
-      ${p.rowImpact ? `<div class="popup-row"><span class="popup-label">ROW</span>${escapeHtml(p.rowImpact)}</div>`:''}
-      ${p.startDate || p.endDate ? `<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}
-      <button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button>
-    </div>`;
+    return `<div><div class="popup-title">${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType))}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button></div>`;
   }
 
   function openPermitDialog(id) {
-    const p = state.permits.find(x => x.id===id); if (!p) return;
-    currentPermitId = id;
-    els.permitDialogTitle.textContent = displayAddress(p);
-    els.sourceBlock.innerHTML = `<div class="source-grid">
-      <div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div>
-      <div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div>
-      <div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div>
-      <div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div>
-    </div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
-    for (const key of ['permitNumber','status','startDate','endDate','rowImpact','notes']) els.permitForm.elements[key].value = p[key] || '';
-    els.matchInfo.textContent = locationDescription(p);
-    els.archivePermitBtn.textContent = p.status === 'Archived' ? 'Restore to Closed' : 'Archive';
-    els.permitDialog.showModal();
+    const p=state.permits.find(x=>x.id===id); if (!p) return;
+    currentPermitId=id; els.permitDialogTitle.textContent=displayAddress(p);
+    els.sourceBlock.innerHTML=`<div class="source-grid"><div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div><div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div><div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div><div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div></div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
+    for (const key of ['permitNumber','status','startDate','endDate','rowImpact','notes']) els.permitForm.elements[key].value=p[key]||'';
+    els.matchInfo.textContent=locationDescription(p); els.archivePermitBtn.textContent=p.archived?'Restore from archive':'Archive'; els.permitDialog.showModal();
   }
 
-  function savePermitForm(e) {
-    e.preventDefault();
-    const p = state.permits.find(x => x.id===currentPermitId); if (!p) return;
-    applyFormToPermit(p);
-    saveState();
-    els.permitDialog.close();
-    renderAll();
-    toast('Permit record saved.');
-  }
+  function savePermitForm(e) { e.preventDefault(); const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); els.permitDialog.close(); renderAll(); toast('Permit record saved.'); }
+  function applyFormToPermit(p) { p.permitNumber=els.permitForm.elements.permitNumber.value; p.status=els.permitForm.elements.status.value; p.startDate=els.permitForm.elements.startDate.value; p.endDate=els.permitForm.elements.endDate.value; p.rowImpact=els.permitForm.elements.rowImpact.value; p.notes=els.permitForm.elements.notes.value; p.updatedAt=new Date().toISOString(); }
 
-  function applyFormToPermit(p) {
-    p.permitNumber = els.permitForm.elements.permitNumber.value;
-    p.status = els.permitForm.elements.status.value;
-    p.startDate = els.permitForm.elements.startDate.value;
-    p.endDate = els.permitForm.elements.endDate.value;
-    p.rowImpact = els.permitForm.elements.rowImpact.value;
-    p.notes = els.permitForm.elements.notes.value;
-    p.updatedAt = new Date().toISOString();
-  }
-
-  function startMoveCurrentPermit() {
-    const p = state.permits.find(x => x.id===currentPermitId); if (!p) return;
-    applyFormToPermit(p); saveState();
-    mapMovePermitId = p.id;
-    els.permitDialog.close();
-    toast(`Click the correct map location for ${displayAddress(p)}.`);
-  }
+  function startMoveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); mapMovePermitId=p.id; els.permitDialog.close(); toast(`Click the correct map location for ${displayAddress(p)}.`); }
 
   async function retryCurrentPermitLocation() {
-    const p = state.permits.find(x => x.id===currentPermitId); if (!p) return;
-    applyFormToPermit(p);
-    p.lat = null; p.lng = null;
-    const ok = await locatePermit(p, true, false);
-    saveState(); renderAll();
-    els.matchInfo.textContent = locationDescription(p);
-    if (ok) {
-      map.setView([p.lat,p.lng], 17);
-      toast(`Matched ${p.matchedFullAddr || displayAddress(p)}.`);
-    }
+    const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); p.lat=null; p.lng=null;
+    const ok=await locatePermit(p,true,false); saveState(); renderAll(); els.matchInfo.textContent=locationDescription(p); if (ok) { map.setView([p.lat,p.lng],17); toast(`Matched ${p.matchedFullAddr||displayAddress(p)}.`); }
   }
 
-  function archiveCurrentPermit() {
-    const p = state.permits.find(x => x.id===currentPermitId); if (!p) return;
-    applyFormToPermit(p);
-    p.status = p.status === 'Archived' ? 'Closed' : 'Archived';
-    saveState();
-    els.permitDialog.close();
-    renderAll();
-    toast(p.status === 'Archived' ? 'Permit archived.' : 'Permit restored to Closed.');
-  }
+  function archiveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); p.archived=!p.archived; saveState(); els.permitDialog.close(); renderAll(); toast(p.archived?'Permit archived.':'Permit restored from archive.'); }
 
   function deleteCurrentPermit() {
-    const p = state.permits.find(x => x.id===currentPermitId); if (!p) return;
+    const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return;
     if (!confirm(`Permanently delete ${p.sourceFilename}?\n\nRe-importing the same filename later would create it again.`)) return;
-    state.permits = state.permits.filter(x => x.id!==p.id);
-    saveState();
-    els.permitDialog.close();
-    renderAll();
-    toast('Permit permanently deleted from local data.');
+    state.permits=state.permits.filter(x=>x.id!==p.id); saveState(); els.permitDialog.close(); renderAll(); toast('Permit permanently deleted from local data.');
   }
 
-  function showUnlocated() {
-    renderUnlocatedList();
-    els.unlocatedDialog.showModal();
-  }
-
+  function showUnlocated() { renderUnlocatedList(); els.unlocatedDialog.showModal(); }
   function renderUnlocatedList() {
-    const items = state.permits.filter(p => !isFiniteNumber(p.lat) || !isFiniteNumber(p.lng));
-    if (!items.length) {
-      els.unlocatedList.innerHTML = '<div class="hint">Every permit currently has a map location.</div>';
-      return;
-    }
-    els.unlocatedList.innerHTML = items.map(p => `<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small></div><div><button class="btn compact" data-action="retry">Retry</button> <button class="btn compact" data-action="place">Place on map</button></div></div>`).join('');
-    els.unlocatedList.querySelectorAll('.unlocated-row').forEach(row => row.addEventListener('click', async e => {
-      const btn = e.target.closest('button'); if (!btn) return;
-      const p = state.permits.find(x => x.id===row.dataset.id); if (!p) return;
-      if (btn.dataset.action === 'retry') {
-        const ok = await locatePermit(p, true, false); saveState(); renderAll(); renderUnlocatedList();
-        if (ok) map.setView([p.lat,p.lng],17);
-      } else if (btn.dataset.action === 'place') {
-        manualPlacePermitId = p.id;
-        els.unlocatedDialog.close();
-        toast(`Click the correct map location for ${displayAddress(p)}.`);
-      }
+    const items=state.permits.filter(p=>!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng));
+    if (!items.length) { els.unlocatedList.innerHTML='<div class="empty-state">Every permit currently has a map location.</div>'; return; }
+    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small></div><div><button class="button small" data-action="retry">Retry</button> <button class="button small" data-action="place">Place on map</button></div></div>`).join('');
+    els.unlocatedList.querySelectorAll('.unlocated-row').forEach(row=>row.addEventListener('click',async e=>{
+      const btn=e.target.closest('button'); if (!btn) return; const p=state.permits.find(x=>x.id===row.dataset.id); if (!p) return;
+      if (btn.dataset.action==='retry') { const ok=await locatePermit(p,true,false); saveState(); renderAll(); renderUnlocatedList(); if (ok) map.setView([p.lat,p.lng],17); }
+      else if (btn.dataset.action==='place') { manualPlacePermitId=p.id; els.unlocatedDialog.close(); toast(`Click the correct map location for ${displayAddress(p)}.`); }
     }));
   }
 
   function filteredPermits() {
-    const search = normalizeMatch(els.searchFilter.value);
-    const statuses = new Set([...els.statusFilters.querySelectorAll('input:checked')].map(i => i.dataset.status));
-    const workType = els.workTypeFilter.value;
-    const contractor = els.contractorFilter.value;
-    const from = els.dateFrom.value;
-    const to = els.dateTo.value;
-    return state.permits.filter(p => {
-      if (!statuses.has(p.status)) return false;
-      if (els.hideClosedFilter.checked && p.status === 'Closed') return false;
-      if (els.hideArchivedFilter.checked && p.status === 'Archived') return false;
-      if (workType && p.workType !== workType) return false;
-      if (contractor && p.contractor !== contractor) return false;
-      if (search) {
-        const hay = normalizeMatch([p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.rowImpact,p.notes,p.sourceFilename].join(' '));
-        if (!hay.includes(search)) return false;
-      }
-      if ((from || to) && !dateRangeIntersects(p.startDate,p.endDate,from,to)) return false;
-      if (els.corridorOnlyFilter.checked && !permitNearAnyCorridor(p)) return false;
-      if (els.venueOnlyFilter.checked && !permitNearAnyVenue(p)) return false;
+    const search=normalizeMatch(els.searchFilter.value); const statuses=new Set([...els.statusFilters.querySelectorAll('input:checked')].map(i=>i.dataset.status));
+    const workType=els.workTypeFilter.value, contractor=els.contractorFilter.value, from=els.dateFrom.value, to=els.dateTo.value;
+    return state.permits.filter(p=>{
+      if (!statuses.has(p.status)) return false; if (els.hideClosedFilter.checked&&p.status==='Closed') return false; if (els.hideArchivedFilter.checked&&p.archived) return false;
+      if (workType&&p.workType!==workType) return false; if (contractor&&p.contractor!==contractor) return false;
+      if (search) { const hay=normalizeMatch([p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.rowImpact,p.notes,p.sourceFilename].join(' ')); if (!hay.includes(search)) return false; }
+      if ((from||to)&&!dateRangeIntersects(p.startDate,p.endDate,from,to)) return false;
+      if (els.corridorOnlyFilter.checked&&!permitNearAnyCorridor(p)) return false; if (els.venueOnlyFilter.checked&&!permitNearAnyVenue(p)) return false;
       return true;
     });
   }
 
   function permitNearAnyCorridor(p) {
-    if (!isFiniteNumber(p.lat) || !isFiniteNumber(p.lng)) return false;
-    const point = turf.point([p.lng,p.lat]);
+    if (!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)) return false; const point=turf.point([p.lng,p.lat]);
     for (const c of state.corridors) {
-      if (!c.latlngs?.length || c.latlngs.length < 2) continue;
-      const feet = Number(c.bufferFeet || 0);
-      try {
-        const line = turf.lineString(c.latlngs.map(([lat,lng]) => [lng,lat]));
-        if (feet > 0) {
-          const poly = turf.buffer(line, feet, { units:'feet' });
-          if (poly && turf.booleanPointInPolygon(point, poly)) return true;
-        } else if (turf.pointToLineDistance(point,line,{units:'feet'}) <= 25) return true;
-      } catch {}
+      const feet=Number(c.bufferFeet||0);
+      for (const path of getCorridorPaths(c)) {
+        try { const line=turf.lineString(path.map(([lat,lng])=>[lng,lat])); if (turf.pointToLineDistance(point,line,{units:'feet'})<=Math.max(feet,25)) return true; } catch {}
+      }
     }
     return false;
   }
 
   function permitNearAnyVenue(p) {
-    if (!isFiniteNumber(p.lat) || !isFiniteNumber(p.lng)) return false;
-    const point = turf.point([p.lng,p.lat]);
-    for (const v of venueRuntime.values()) {
-      const d = turf.distance(point, turf.point([v.lng,v.lat]), { units:'miles' }) * 5280;
-      if (d <= VENUE_NEAR_FEET) return true;
-    }
+    if (!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)) return false; const point=turf.point([p.lng,p.lat]);
+    for (const v of venueRuntime.values()) if (turf.distance(point,turf.point([v.lng,v.lat]),{units:'miles'})*5280<=VENUE_NEAR_FEET) return true;
     return false;
   }
 
-  function dateRangeIntersects(start,end,from,to) {
-    if (!start && !end) return false;
-    const s = start || end;
-    const e = end || start;
-    if (from && e < from) return false;
-    if (to && s > to) return false;
-    return true;
-  }
+  function dateRangeIntersects(start,end,from,to) { if (!start&&!end) return false; const s=start||end,e=end||start; if (from&&e<from) return false; if (to&&s>to) return false; return true; }
 
   function refreshFilterOptions() {
-    const currentWork = els.workTypeFilter.value;
-    const currentContractor = els.contractorFilter.value;
-    const workTypes = uniqueExact(state.permits.map(p => p.workType));
-    const contractors = uniqueExact(state.permits.map(p => p.contractor));
-    els.workTypeFilter.innerHTML = '<option value="">All work types</option>' + workTypes.map(v => `<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
-    els.contractorFilter.innerHTML = '<option value="">All contractors</option>' + contractors.map(v => `<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
-    els.workTypeFilter.value = workTypes.includes(currentWork) ? currentWork : '';
-    els.contractorFilter.value = contractors.includes(currentContractor) ? currentContractor : '';
+    const currentWork=els.workTypeFilter.value,currentContractor=els.contractorFilter.value; const workTypes=uniqueExact(state.permits.map(p=>p.workType)),contractors=uniqueExact(state.permits.map(p=>p.contractor));
+    els.workTypeFilter.innerHTML='<option value="">All work types</option>'+workTypes.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
+    els.contractorFilter.innerHTML='<option value="">All contractors</option>'+contractors.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
+    els.workTypeFilter.value=workTypes.includes(currentWork)?currentWork:''; els.contractorFilter.value=contractors.includes(currentContractor)?currentContractor:'';
   }
 
-  function updateStats() {
-    els.totalCount.textContent = state.permits.length;
-    els.visibleCount.textContent = filteredPermits().filter(p => isFiniteNumber(p.lat) && isFiniteNumber(p.lng)).length;
-    els.unlocatedCount.textContent = state.permits.filter(p => !isFiniteNumber(p.lat) || !isFiniteNumber(p.lng)).length;
-  }
-
-  function updateLayerVisibility() {
-    toggleLayer(permitCluster, els.layerPermits.checked);
-    toggleLayer(venueLayer, els.layerVenues.checked);
-    toggleLayer(venueBuildingLayer, els.layerBuildings.checked);
-    toggleLayer(venueContextLayer, els.layerVenueContext.checked);
-    toggleLayer(corridorLayer, els.layerCorridors.checked);
-  }
-
-  function toggleLayer(layer, show) {
-    if (show && !map.hasLayer(layer)) layer.addTo(map);
-    if (!show && map.hasLayer(layer)) map.removeLayer(layer);
-  }
+  function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(p=>!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)).length; }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); }
+  function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
-    els.searchFilter.value = '';
-    els.dateFrom.value = '';
-    els.dateTo.value = '';
-    els.workTypeFilter.value = '';
-    els.contractorFilter.value = '';
-    els.corridorOnlyFilter.checked = false;
-    els.venueOnlyFilter.checked = false;
-    els.hideClosedFilter.checked = true;
-    els.hideArchivedFilter.checked = true;
-    els.statusFilters.querySelectorAll('input').forEach(i => i.checked = i.dataset.status !== 'Archived');
-    renderAll();
+    els.searchFilter.value=''; els.dateFrom.value=''; els.dateTo.value=''; els.workTypeFilter.value=''; els.contractorFilter.value=''; els.corridorOnlyFilter.checked=false; els.venueOnlyFilter.checked=false; els.hideClosedFilter.checked=true; els.hideArchivedFilter.checked=true;
+    els.statusFilters.querySelectorAll('input').forEach(i=>i.checked=true); renderAll();
   }
 
   function fitAll() {
-    const points = [];
-    for (const p of filteredPermits()) if (isFiniteNumber(p.lat) && isFiniteNumber(p.lng)) points.push([p.lat,p.lng]);
-    for (const v of venueRuntime.values()) points.push([v.lat,v.lng]);
-    for (const c of state.corridors) points.push(...(c.latlngs || []));
-    if (points.length) map.fitBounds(points, { padding:[35,35], maxZoom:16 });
-    else map.setView(BOULDER_CENTER,13);
+    const points=[]; for (const p of filteredPermits()) if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) points.push([p.lat,p.lng]); for (const v of venueRuntime.values()) points.push([v.lat,v.lng]); for (const c of state.corridors) for (const path of getCorridorPaths(c)) points.push(...path);
+    if (points.length) map.fitBounds(points,{padding:[35,35],maxZoom:16}); else map.setView(BOULDER_CENTER,13);
   }
 
   function exportBackup() {
-    const payload = {
-      format:'sundance-row-map-backup',
-      version:1,
-      exportedAt:new Date().toISOString(),
-      festival:{ start:FESTIVAL_START,end:FESTIVAL_END },
-      permits:state.permits,
-      corridors:state.corridors
-    };
-    downloadBlob(`sundance-row-map-backup-${todayStamp()}.json`, JSON.stringify(payload,null,2), 'application/json');
+    const payload={ format:'pas-de-deux-backup', version:2, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors };
+    downloadBlob(`pas-de-deux-backup-${todayStamp()}.json`,JSON.stringify(payload,null,2),'application/json');
   }
 
   async function importBackup(e) {
-    const file = e.target.files?.[0]; if (!file) return;
+    const file=e.target.files?.[0]; if (!file) return;
     try {
-      const payload = JSON.parse(await file.text());
-      if (payload.format !== 'sundance-row-map-backup' || !Array.isArray(payload.permits) || !Array.isArray(payload.corridors)) throw new Error('Not a Sundance ROW Map backup');
+      const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
+      if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
       if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state.permits = payload.permits;
-      state.corridors = payload.corridors;
-      state.initialized = true;
-      saveState();
-      rebuildCorridors(); renderAll();
-      toast('Backup imported.');
-    } catch (err) { toast(`Backup import failed: ${err.message || err}`); }
-    finally { e.target.value=''; }
+      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors}); saveState(); rebuildCorridors(); renderAll(); toast('Backup imported.');
+    } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
   }
 
   function exportCsv() {
-    const headers = ['source_filename','address_number','street','work_type','contractor','permit_number','status','start_date','end_date','row_impact','notes','latitude','longitude','location_method'];
-    const rows = state.permits.map(p => [p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
-    const csv = [headers,...rows].map(row => row.map(csvCell).join(',')).join('\r\n');
-    downloadBlob(`sundance-row-permits-${todayStamp()}.csv`, csv, 'text/csv;charset=utf-8');
+    const headers=['source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
+    const rows=state.permits.map(p=>[p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
+    const csv=[headers,...rows].map(row=>row.map(csvCell).join(',')).join('\r\n'); downloadBlob(`pas-de-deux-permits-${todayStamp()}.csv`,csv,'text/csv;charset=utf-8');
   }
 
   function clearAllData() {
     if (!confirm('Clear ALL local permits, corridors, notes, dates, and statuses from this browser? Export a backup first if you may need them.')) return;
-    state = { initialized:true, permits:[], corridors:[] };
-    saveState(); rebuildCorridors(); renderAll();
-    toast('Local permit and corridor data cleared.');
+    state={initialized:true,permits:[],corridors:[]}; saveState(); rebuildCorridors(); renderAll(); toast('Local permit and corridor data cleared.');
   }
 
   function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { initialized:false, permits:[], corridors:[] };
-      const parsed = JSON.parse(raw);
-      return { initialized:!!parsed.initialized, permits:Array.isArray(parsed.permits)?parsed.permits:[], corridors:Array.isArray(parsed.corridors)?parsed.corridors:[] };
-    } catch { return { initialized:false, permits:[], corridors:[] }; }
+    try { const raw=localStorage.getItem(STORAGE_KEY); if (!raw) return {initialized:false,permits:[],corridors:[]}; const parsed=JSON.parse(raw); return {initialized:!!parsed.initialized,permits:Array.isArray(parsed.permits)?parsed.permits:[],corridors:Array.isArray(parsed.corridors)?parsed.corridors:[]}; }
+    catch { return {initialized:false,permits:[],corridors:[]}; }
   }
 
-  function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  function migrateState(input) {
+    const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[]};
+    for (const p of output.permits) {
+      if (p.status==='Application') p.status='Upcoming';
+      if (p.status==='Archived') { p.status='Closed'; p.archived=true; }
+      if (!STATUS_VALUES.includes(p.status)) p.status='Upcoming';
+      if (typeof p.archived!=='boolean') p.archived=false;
+    }
+    for (const c of output.corridors) {
+      if (!Array.isArray(c.paths) && Array.isArray(c.latlngs)) c.paths=[c.latlngs];
+      if (!c.sourceType) c.sourceType='custom';
+      if (!c.scope) c.scope=c.sourceType==='street'?'Street corridor':'Custom route';
+    }
+    return output;
   }
 
-  function locationDescription(p) {
-    if (p.matchMethod === 'manual') return `Location: manual map placement (${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)})`;
-    if (isFiniteNumber(p.lat) && isFiniteNumber(p.lng)) return `Location: ${p.matchedFullAddr || 'Boulder public address match'} • ${p.matchMethod || 'matched'}`;
-    return 'Location: not matched yet. The permit remains available for manual placement.';
-  }
-
-  function displayAddress(p) {
-    return `${String(p.addressNumber).trim()} ${prettyStreet(p.street)}`.trim();
-  }
-
-  function prettyStreet(value) { return prettySource(value); }
+  function saveState() { localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
+  function locationDescription(p) { if (p.matchMethod==='manual') return `Location: manual map placement (${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)})`; if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) return `Location: ${p.matchedFullAddr||'Boulder public address match'} • ${p.matchMethod||'matched'}`; return 'Location: not matched yet. The permit remains available for manual placement.'; }
+  function displayAddress(p) { return `${String(p.addressNumber).trim()} ${prettySource(p.street)}`.trim(); }
 
   function prettySource(value) {
-    return String(value ?? '').replace(/\b([a-z][a-z']*)\b/gi, token => {
-      if (/^[A-Z0-9]{2,}$/.test(token)) return token;
-      if (/^\d+(st|nd|rd|th)$/i.test(token)) return token.toLowerCase();
-      return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
-    });
+    return String(value??'').replace(/\b([a-z][a-z']*)\b/gi,token=>{ if (/^[A-Z0-9]{2,}$/.test(token)) return token; if (/^\d+(st|nd|rd|th)$/i.test(token)) return token.toLowerCase(); return token.charAt(0).toUpperCase()+token.slice(1).toLowerCase(); });
   }
-
-  function normalizeMatch(value) {
-    return String(value ?? '').toLowerCase().replace(/[.,#]/g,' ').replace(/\b(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|court|ct|place|pl|way)\b/g,' ').replace(/\s+/g,' ').trim();
-  }
-
-  function uniqueExact(arr) {
-    return [...new Set(arr.filter(v => v !== null && v !== undefined && v !== ''))].sort((a,b) => prettySource(a).localeCompare(prettySource(b)));
-  }
-
+  function normalizeMatch(value) { return String(value??'').toLowerCase().replace(/[.,#]/g,' ').replace(/\b(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|court|ct|place|pl|way)\b/g,' ').replace(/\s+/g,' ').trim(); }
+  function uniqueExact(arr) { return [...new Set(arr.filter(v=>v!==null&&v!==undefined&&v!==''))].sort((a,b)=>prettySource(a).localeCompare(prettySource(b))); }
   function statusClass(status) { return String(status||'').toLowerCase().replace(/[^a-z0-9]+/g,'-'); }
-  function isFiniteNumber(v) { return typeof v === 'number' && Number.isFinite(v); }
-  function cryptoRandomId(prefix) { return `${prefix}-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`; }
+  function isFiniteNumber(v) { return typeof v==='number'&&Number.isFinite(v); }
+  function cryptoRandomId(prefix) { return `${prefix}-${crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(16).slice(2)}`}`; }
   function todayStamp() { return new Date().toISOString().slice(0,10); }
-  function csvCell(v) { const s=String(v??''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; }
+  function csvCell(v) { const s=String(v??''); return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; }
   function downloadBlob(name,text,type) { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }
-  function escapeHtml(s) { return String(s??'').replace(/[&<>"]/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+  function escapeHtml(s) { return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function escapeAttr(s) { return escapeHtml(s).replace(/'/g,'&#39;'); }
 
-  function toast(message) {
-    els.toast.textContent = message;
-    els.toast.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => els.toast.classList.remove('show'), 4200);
-  }
+  function toast(message) { els.toast.textContent=message; els.toast.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>els.toast.classList.remove('show'),4200); }
 
-  function openDb() {
-    return new Promise((resolve,reject) => {
-      const req = indexedDB.open(DB_NAME,1);
-      req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-  async function idbSet(key,value) {
-    try { const db=await openDb(); await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readwrite'); tx.objectStore(DB_STORE).put(value,key); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); db.close(); } catch {}
-  }
-  async function idbGet(key) {
-    try { const db=await openDb(); const value=await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readonly'); const req=tx.objectStore(DB_STORE).get(key); req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error); }); db.close(); return value; } catch { return null; }
-  }
+  function openDb() { return new Promise((resolve,reject)=>{ const req=indexedDB.open(DB_NAME,1); req.onupgradeneeded=()=>req.result.createObjectStore(DB_STORE); req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error); }); }
+  async function idbSet(key,value) { try { const db=await openDb(); await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readwrite'); tx.objectStore(DB_STORE).put(value,key); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); db.close(); } catch {} }
+  async function idbGet(key) { try { const db=await openDb(); const value=await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readonly'); const req=tx.objectStore(DB_STORE).get(key); req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error); }); db.close(); return value; } catch { return null; } }
 })();
