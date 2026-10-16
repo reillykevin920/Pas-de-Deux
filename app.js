@@ -70,6 +70,8 @@
     initMap();
     initStatusFilters();
     bindUI();
+    // Corridor controls are modal/contextual; never leave the map banner visible at rest.
+    exitCorridorMapMode(false);
     saveState(); // save any migration immediately
 
     if (!state.initialized) {
@@ -979,7 +981,12 @@
       for (const fc of descriptor.featureCollection.layers) {
         const features = fc?.featureSet?.features || [];
         const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
-        count += addConeZonesGeoJson(converted, descriptor.title || fc?.layerDefinition?.name || 'Cone Zones');
+        const popupConfig = buildConePopupConfig(
+          fc?.popupInfo || descriptor?.popupInfo,
+          { fields:fc?.layerDefinition?.fields || [], displayField:fc?.layerDefinition?.displayField },
+          descriptor.title || fc?.layerDefinition?.name || 'Cone Zones'
+        );
+        count += addConeZonesGeoJson(converted, descriptor.title || fc?.layerDefinition?.name || 'Cone Zones', popupConfig);
       }
       return count;
     }
@@ -993,7 +1000,12 @@
         for (const fc of embedded) {
           const features = fc?.featureSet?.features || [];
           const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
-          count += addConeZonesGeoJson(converted, descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones');
+          const popupConfig = buildConePopupConfig(
+            fc?.popupInfo || descriptor?.popupInfo,
+            { fields:fc?.layerDefinition?.fields || [], displayField:fc?.layerDefinition?.displayField },
+            descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones'
+          );
+          count += addConeZonesGeoJson(converted, descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones', popupConfig);
         }
         return count;
       }
@@ -1002,16 +1014,30 @@
     const queryTargets = await resolveArcGisQueryTargets(descriptor);
     let count = 0;
     for (const target of queryTargets) {
-      const geojson = await queryArcGisGeoJson(target.url, target.where);
-      count += addConeZonesGeoJson(geojson, target.title || descriptor.title || 'Cone Zones');
+      const [geojson, meta] = await Promise.all([
+        queryArcGisGeoJson(target.url, target.where),
+        arcgisLayerInfo(target.url).catch(() => null)
+      ]);
+      const popupConfig = buildConePopupConfig(target.popupInfo || descriptor.popupInfo, meta, target.title || descriptor.title || 'Cone Zones');
+      count += addConeZonesGeoJson(geojson, target.title || descriptor.title || 'Cone Zones', popupConfig);
     }
     return count;
+  }
+
+  async function arcgisLayerInfo(url) {
+    const res = await fetch(`${url.replace(/\/$/,'')}?f=json`);
+    if (!res.ok) throw new Error(`Cone Zones layer metadata ${res.status}`);
+    const json = await res.json();
+    if (json?.error) throw new Error(json.error.message || 'Cone Zones layer metadata error');
+    return json;
   }
 
   async function resolveArcGisQueryTargets(descriptor) {
     const url = descriptor.url.replace(/\/$/,'');
     const where = descriptor?.layerDefinition?.definitionExpression || descriptor?.definitionExpression || '1=1';
-    if (/\/(?:FeatureServer|MapServer)\/\d+$/i.test(url)) return [{ url, title:descriptor.title, where }];
+    if (/\/(?:FeatureServer|MapServer)\/\d+$/i.test(url)) {
+      return [{ url, title:descriptor.title, where, popupInfo:descriptor.popupInfo || null }];
+    }
     if (!/\/(?:FeatureServer|MapServer)$/i.test(url)) return [];
     const res = await fetch(`${url}?f=json`);
     if (!res.ok) throw new Error(`Cone Zones service ${res.status}`);
@@ -1022,7 +1048,8 @@
       return {
         url:`${url}/${l.id}`,
         title:[descriptor.title,cfg?.title || l.name].filter(Boolean).join(' — '),
-        where:cfg?.layerDefinition?.definitionExpression || cfg?.definitionExpression || where
+        where:cfg?.layerDefinition?.definitionExpression || cfg?.definitionExpression || where,
+        popupInfo:cfg?.popupInfo || descriptor.popupInfo || null
       };
     });
   }
@@ -1047,14 +1074,37 @@
     return all;
   }
 
-  function addConeZonesGeoJson(geojson, layerTitle) {
+  function buildConePopupConfig(popupInfo, meta, layerTitle) {
+    const serviceFields = Array.isArray(meta?.fields) ? meta.fields : [];
+    const aliasMap = new Map(serviceFields.map(f => [String(f.name || '').toLowerCase(), f.alias || f.name]));
+    const officialFieldInfos = Array.isArray(popupInfo?.fieldInfos) ? popupInfo.fieldInfos : [];
+    const popupFieldElement = Array.isArray(popupInfo?.popupElements)
+      ? popupInfo.popupElements.find(el => el?.type === 'fields' && Array.isArray(el.fieldInfos))
+      : null;
+    const elementFieldInfos = popupFieldElement?.fieldInfos || [];
+    const fieldInfos = (elementFieldInfos.length ? elementFieldInfos : officialFieldInfos)
+      .filter(fi => fi && fi.visible !== false && fi.fieldName && !/^expression\//i.test(fi.fieldName));
+    const textElements = Array.isArray(popupInfo?.popupElements)
+      ? popupInfo.popupElements.filter(el => el?.type === 'text' && el.text).map(el => el.text)
+      : [];
+    return {
+      layerTitle,
+      titleTemplate:popupInfo?.title || '',
+      descriptionTemplate:popupInfo?.description || textElements.join('\n'),
+      fieldInfos,
+      aliasMap,
+      displayField:meta?.displayField || ''
+    };
+  }
+
+  function addConeZonesGeoJson(geojson, layerTitle, popupConfig={}) {
     const features = Array.isArray(geojson?.features) ? geojson.features.filter(f => f?.geometry) : [];
     if (!features.length) return 0;
     const layer = L.geoJSON({ type:'FeatureCollection', features }, {
       pane:'overlayPane',
       style: feature => coneZoneStyle(feature),
       pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius:6, color:'#fff', weight:2, fillColor:'#d66b24', fillOpacity:.95 }),
-      onEachFeature: (feature, leafletLayer) => leafletLayer.bindPopup(coneZonePopup(feature, layerTitle), { maxWidth:340, className:'cone-zone-popup' })
+      onEachFeature: (feature, leafletLayer) => leafletLayer.bindPopup(coneZonePopup(feature, layerTitle, popupConfig), { maxWidth:430, maxHeight:480, className:'cone-zone-popup' })
     });
     layer.addTo(coneZonesLayer);
     return features.length;
@@ -1066,33 +1116,110 @@
     return { color:'#d66b24', weight:4, opacity:.88 };
   }
 
-  function coneZonePopup(feature, layerTitle) {
+  function coneZonePopup(feature, layerTitle, popupConfig={}) {
     const p = feature?.properties || {};
-    const title = firstProperty(p, ['projectname','project_name','name','title','project','location','address']) || layerTitle || 'Cone Zones';
+    const officialTitle = fillArcGisTemplate(popupConfig.titleTemplate, p);
+    const displayFieldValue = popupConfig.displayField ? propertyValueCI(p, popupConfig.displayField) : '';
+    const title = cleanConeText(officialTitle) || displayFieldValue || firstProperty(p, [
+      'projectname','project_name','projecttitle','project_title','name','title','project','location','address','workdescription','work_description'
+    ]) || layerTitle || 'Cone Zones';
+
     const rows = [];
+    const used = new Set();
+    const addRow = (label, key, value) => {
+      if (value===null || value===undefined || value==='') return;
+      const normalizedKey = String(key || '').toLowerCase();
+      if (normalizedKey && used.has(normalizedKey)) return;
+      if (normalizedKey) used.add(normalizedKey);
+      rows.push({ label, value });
+    };
+
+    // Prefer the City's own popup ordering and aliases when the web map supplies them.
+    for (const fi of popupConfig.fieldInfos || []) {
+      const value = propertyValueCI(p, fi.fieldName);
+      if (value===null || value===undefined || value==='') continue;
+      addRow(fi.label || popupConfig.aliasMap?.get(String(fi.fieldName).toLowerCase()) || friendlyFieldName(fi.fieldName), fi.fieldName, value);
+      if (rows.length >= 12) break;
+    }
+
+    // Then make sure operationally useful fields appear even if the official popup config is sparse.
     const preferred = [
-      ['Impact',['impact','travelimpact','travel_impact','description','details','summary']],
+      ['Impact',['impact','travelimpact','travel_impact','trafficimpact','traffic_impact','traveldelay','travel_delay']],
+      ['Work',['workdescription','work_description','description','details','summary','activity','work']],
       ['Status',['status','projectstatus','project_status']],
       ['Start',['startdate','start_date','begindate','begin_date','fromdate','datefrom']],
       ['End',['enddate','end_date','completiondate','completion_date','todate','dateto']],
-      ['Location',['location','address','street','limits']]
+      ['Location',['location','address','street','limits','projectlimits','project_limits']],
+      ['Contact',['contact','contactname','contact_name','projectmanager','project_manager']],
+      ['Agency',['agency','department','division','owner']]
     ];
-    const used = new Set();
     for (const [label, keys] of preferred) {
       const hit = firstPropertyEntry(p, keys);
-      if (!hit || hit[1]===null || hit[1]==='') continue;
-      used.add(hit[0]);
-      rows.push(`<div class="popup-row"><span class="popup-label">${escapeHtml(label)}</span>${escapeHtml(formatConeValue(hit[1]))}</div>`);
-      if (rows.length >= 5) break;
+      if (!hit) continue;
+      addRow(label, hit[0], hit[1]);
+      if (rows.length >= 12) break;
     }
-    if (rows.length < 3) {
+
+    if (rows.length < 7) {
       for (const [key,value] of Object.entries(p)) {
-        if (used.has(key) || value===null || value==='' || /objectid|globalid|shape|fid|latitude|longitude/i.test(key)) continue;
-        rows.push(`<div class="popup-row"><span class="popup-label">${escapeHtml(friendlyFieldName(key))}</span>${escapeHtml(formatConeValue(value))}</div>`);
-        if (rows.length >= 5) break;
+        if (value===null || value==='' || isConeSystemField(key) || used.has(String(key).toLowerCase())) continue;
+        const label = popupConfig.aliasMap?.get(String(key).toLowerCase()) || friendlyFieldName(key);
+        addRow(label, key, value);
+        if (rows.length >= 12) break;
       }
     }
-    return `<div class="cone-zone-layer-name">${escapeHtml(layerTitle || 'Cone Zones')}</div><div class="popup-title">${escapeHtml(formatConeValue(title))}</div>${rows.join('')}<div class="cone-zone-source">Live reference from City of Boulder Cone Zones</div>`;
+
+    const officialDescription = cleanConeText(fillArcGisTemplate(popupConfig.descriptionTemplate, p));
+    const descriptionCandidate = officialDescription || firstProperty(p, [
+      'travelimpact','travel_impact','trafficimpact','traffic_impact','impact','description','details','summary','workdescription','work_description'
+    ]);
+    const detailText = descriptionCandidate ? formatConeValue(descriptionCandidate, 900) : '';
+
+    const urlHit = Object.entries(p).find(([key,value]) => !isConeSystemField(key) && isSafeHttpUrl(value));
+    const rowHtml = rows.map(({label,value}) => `<div class="popup-row"><span class="popup-label">${escapeHtml(label)}</span><div>${formatConeDisplay(value)}</div></div>`).join('');
+    const detailHtml = detailText && !rows.some(r => String(formatConeValue(r.value,900)) === String(detailText))
+      ? `<div class="cone-zone-details">${escapeHtml(detailText)}</div>` : '';
+    const linkHtml = urlHit ? `<a class="cone-zone-link" href="${escapeHtml(String(urlHit[1]))}" target="_blank" rel="noopener noreferrer">Open project information ↗</a>` : '';
+    const officialLink = `<a class="cone-zone-link" href="https://bouldercolorado.gov/city-boulder-cone-zones-map" target="_blank" rel="noopener noreferrer">Open official Cone Zones ↗</a>`;
+
+    return `<div class="cone-zone-layer-name">${escapeHtml(layerTitle || 'Cone Zones')}</div><div class="popup-title">${escapeHtml(formatConeValue(title,220))}</div>${detailHtml}${rowHtml}${linkHtml || officialLink}<div class="cone-zone-source">Live reference from City of Boulder Cone Zones</div>`;
+  }
+
+  function fillArcGisTemplate(template, props) {
+    if (!template || typeof template !== 'string') return '';
+    return template.replace(/\{([^{}]+)\}/g, (match, token) => {
+      if (/^expression\//i.test(token)) return '';
+      const value = propertyValueCI(props, token);
+      return value===null || value===undefined ? '' : formatConeValue(value,900);
+    });
+  }
+
+  function propertyValueCI(props, key) {
+    const target=String(key || '').toLowerCase();
+    const hit=Object.entries(props || {}).find(([k]) => String(k).toLowerCase()===target);
+    return hit ? hit[1] : '';
+  }
+
+  function cleanConeText(value) {
+    if (!value) return '';
+    const holder=document.createElement('div');
+    holder.innerHTML=String(value).replace(/<br\s*\/?\s*>/gi,'\n').replace(/<\/p>/gi,'\n');
+    return (holder.textContent || holder.innerText || '').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  }
+
+  function isConeSystemField(key) {
+    return /^(objectid|fid|oid|globalid|shape|shape__length|shape__area|latitude|longitude|created_|last_edited_|creator|editor)$/i.test(String(key || '')) || /^(objectid|globalid|shape)/i.test(String(key || ''));
+  }
+
+  function isSafeHttpUrl(value) {
+    if (typeof value !== 'string') return false;
+    try { const u=new URL(value); return u.protocol==='https:' || u.protocol==='http:'; } catch { return false; }
+  }
+
+  function formatConeDisplay(value) {
+    const formatted=formatConeValue(value,700);
+    if (isSafeHttpUrl(formatted)) return `<a href="${escapeHtml(formatted)}" target="_blank" rel="noopener noreferrer">${escapeHtml(formatted)}</a>`;
+    return escapeHtml(formatted).replace(/\n/g,'<br>');
   }
 
   function firstProperty(props, names) { const hit=firstPropertyEntry(props,names); return hit ? hit[1] : ''; }
@@ -1105,13 +1232,15 @@
     return null;
   }
   function friendlyFieldName(key) { return String(key).replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\b\w/g,m=>m.toUpperCase()); }
-  function formatConeValue(value) {
+  function formatConeValue(value, maxLength=700) {
     if (typeof value === 'number' && value > 946684800000 && value < 4102444800000) {
       const d=new Date(value); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString();
     }
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (Array.isArray(value)) value=value.join(', ');
     const s=String(value ?? '');
     const ms=/^\/Date\((\d+)\)\/$/.exec(s); if (ms) { const d=new Date(Number(ms[1])); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString(); }
-    return s.length > 260 ? `${s.slice(0,257)}…` : s;
+    return s.length > maxLength ? `${s.slice(0,maxLength-1)}…` : s;
   }
 
   function esriFeaturesToGeoJson(features, geometryType) {

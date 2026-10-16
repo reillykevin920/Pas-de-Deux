@@ -1,4 +1,4 @@
-# Pas de Deux
+# Pas de Deux — v2.3
 
 A map-first coordination tool for the 2027 Sundance Film Festival in Boulder and City permit activity.
 
@@ -69,3 +69,9 @@ Pas de Deux requests public data directly in the browser:
 No City authentication, internal system connection, or basemap API key is required for these map/reference layers.
 
 The Cone Zones integration discovers the operational web map behind the City's public Experience at runtime, then requests its public construction/travel-impact feature geometry. This avoids baking a stale copy of Cone Zones into Pas de Deux. If the City changes the public ArcGIS configuration or temporarily blocks a layer, Pas de Deux reports the Cone Zones layer as unavailable without affecting local permit data.
+
+
+## v2.3
+- Corridor mode banner is now guaranteed hidden unless corridor selection/drawing is actually active.
+- Cone Zones popups now honor the City web map popup configuration and field aliases when exposed publicly, while retaining a broader attribute fallback.
+- Cone Zones details can include project/work description, travel impact, status, dates, location, contact/agency and public project links when those values are present in the City source.
