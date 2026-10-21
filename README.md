@@ -1,49 +1,38 @@
-# Pas de Deux — v2.4
+# Pas de Deux — v2.5.1
 
-A single-workstation, map-first construction/event coordination tool for the 2027 Sundance Film Festival in Boulder. Designed for extension to other city events. **This version is not a synchronized, authenticated multi-user application.**
+Interactive Boulder event/permit coordination map. Single-workstation/local-browser build; future shared permit-tech deployment will require authenticated shared storage.
 
-## What's new in v2.4
+## Changes in this release
 
-- **Pin appearance** in the sidebar: color by status (default) or one high-contrast color, a color palette/custom hex color, circle / square / diamond / map pin, and three sizes. Per-permit optional pin color/shape overrides in the record editor. **No imported filename/source data is altered.**
-- **Clear all permits** under Data: explicit `CLEAR` confirmation, optional JSON backup first. It removes every local permit and its annotations, including archived/closed permits, but **preserves corridors, appearance, Cone Zones, festival venues and the connected folder handle**. If you sync that folder again, filenames will be imported again; annotations previously cleared will not be restored without a backup.
-- **Sundance 2027 venue inventory** reviewed against the [SundanceBoCo venues map](https://sundanceboco.com/venues) and the [official Sundance Institute announcement](https://www.sundance.org/blogs/2027-sundance-film-festival-to-take-place-january-21-31-in-boulder-colorado/). The 15 official screening/programming entries correspond to **12 physical sites** (e.g. two theaters + programming at the Dairy, and both screenings and programming at eTown). Crucially, Chautauqua Auditorium now uses **100 Morning Glory Drive**, not 900 Baseline; Old Main uses **1600 Pleasant St**. If a City public GIS address/building lookup cannot confidently locate a venue, it is **listed as unresolved**, not silently plotted at a guess. Only confident building-footprint matches are highlighted.
-- **Light / Dark / System** theme. Dark mode re-tones *the existing public OpenStreetMap tiles locally*, so no new map provider or API key is required. It does not modify or upload any map/permit data.
-- **Dynamic collapsible map legend** updates to match the selected pin color/shape.
-- **Needs Location Review** panel includes unmatched, ambiguous (two plausible geographic matches), GIS-unavailable, and staff-flagged records. Source filename and reason are displayed; retry matching, manual placement, or open/edit a permit. Manual placement has visible **Cancel** and `Esc` exit. Bulk retry excludes already placed records to protect deliberate manual locations.
-- Freshly imported permits default to **In Review** (because the mere presence of a PDF does not establish that work is upcoming). Existing Upcoming / Active / Closed statuses are left intact. Archived remains separate.
-- The date-range map filtering controls were removed, because planned permit dates do not reliably reflect work in the field. Dates remain editable as reference metadata on each record.
+- Complete visual restyle to a restrained, map-first municipal operations interface. More legible typography, clearer hierarchy, and much less sidebar clutter.
+- **Working Light / Dark toggle** in the header (no System option). Dark mode uses a readable slate UI and gently dims the public OSM tiles rather than inverting them to near-black. No map API key.
+- **Appearance editing now lives in the map key**, not the sidebar. Click **Permits → Edit** or **Sundance sites → Edit** to choose the *category default* color, circle / square / diamond / map pin, and size. Defaults are stored locally with the other app data. Optional permit-specific overrides remain in the permit editor. Permit color can optionally be grouped by status; choose **One color** to use a single default color for all permits. Source permit data is never changed by appearance settings.
+- **Venue markers are available at map initialization**, from the verified site inventory. The slow public Boulder GIS building-footprint enrichment now runs asynchronously and cannot prevent the **12 physical Sundance site markers** from rendering. The 12 sites represent 15 official venue/programming entries, including multiple programming spaces at the Dairy and eTown. Chautauqua Auditorium appears at 100 Morning Glory Drive. Click **Focus on festival sites** in the left panel to locate all markers quickly.
+- HTML now includes versioned `app.js?v=2.5.1` and `styles.css?v=2.5.1` references to reduce the chance of mismatching a newly published HTML page with old cached app assets.
+- Existing **Needs location review**, **Clear all permits** (explicit `CLEAR` confirmation), and **Cone Zones** remain available.
 
-## Preserved from v2.3
+## Existing behavior preserved
 
-- Public OSM basemap, Boulder public GIS address points, street geometry, and building footprints.
-- Public City of Boulder **Cone Zones** contextual layer, toggleable with enhanced project-detail popups. Cone Zones data never overwrites or mixes with local permits.
-- File System Access API permit-folder connection and sync, folder/PDF name imports, and drag-and-drop fallback.
-- **Only filenames are accessed. PDF bytes are never read, parsed, uploaded, attached, opened or indexed.** The four filename fields and full original filename remain **verbatim** in local records. Display formatting is presentation-only.
-- Edit permit # / status / date / notes / ROW-impact assessment; archived/closed toggles; filters and status management.
-- Corridor street selection, whole street or segment, custom-draw fallback, priority and buffers. All corridor selection modes have visible Cancel / Esc.
-- JSON backups and CSV export.
-- Same `localStorage` key as v1/v2.3, so upgrading the hosted site **should preserve current browser data** when origin/host is unchanged.
+- Permits are imported from **filenames only**. PDF contents are not opened, parsed, uploaded, attached, or indexed. Original filenames and each source field are stored verbatim; display formatting does not change records. Repeated imports preserve annotations for existing filenames.
+- Connect a permit folder, resync, use file/folder import, or drag and drop; manually correct or retry address matches in the location-review panel.
+- Permits have editable permit number, In Review / Upcoming / Active / Closed status, dates, notes, staff-entered impact assessments, and optional pin appearance overrides. New imported permits default to In Review. Dates do not trigger automatic operational impact judgments.
+- Designate and edit street-aware or custom corridors with Cancel and Esc. Corridor proximity is contextual; impact decisions remain staff decisions.
+- Toggle City of Boulder public Cone Zones features and their exposed project descriptions/attributes without mixing them into local permit records.
+- JSON export/import backup and CSV export. Clear all permits deletes only the locally saved permits/annotations — **not** corridors, venue/site markers, appearance settings, or the folder permission handle. Re-importing cleared filename records cannot restore the deleted annotations without a backup.
 
-## Deploy (GitHub Pages / Cloudflare Pages)
+## Deployment — GitHub Pages / Cloudflare Pages
 
-Replace the existing four repo-root files with the four in this ZIP:
+1. **Before upgrading, use Data → Export backup on the existing working app.** Keep the JSON file somewhere safe.
+2. Replace the four files at the root of the existing repository: `index.html`, `app.js`, `styles.css`, and `README.md`. Commit/publish using your current workflow. No Node, local build step, or API key required.
+3. Open the **same hosted URL** in the **same browser/profile** to retain local permits/corridors. Do not change hostname/origin. After publishing, force refresh once on Mac with **Cmd + Shift + R** if an old page is still cached.
+4. Confirm you see Sundance sites immediately, that **Focus on festival sites** zooms to all 12, that Light and Dark visibly switch the sidebar/background/map tiles, and that clicking either category in the Map key edits its default marker appearance.
+5. Toggle Cone Zones to confirm the public City service is available from your network. Existing annotations and corridors should remain intact.
 
-1. `index.html`
-2. `app.js`
-3. `styles.css`
-4. `README.md`
+## Sources and limitations
 
-Commit and publish using the existing static-site setup. **Do not change the host/domain** if you need access to the same existing browser-local permit data. Before replacing files, export a JSON backup from v2.3 (recommended). A browser refresh may be necessary for updated CSS/JS; a hard refresh (`Ctrl+Shift+R` or `Cmd+Shift+R`) removes an old cached app version without clearing local permit records.
+- [2027 Sundance official venue roster](https://www.sundance.org/blogs/2027-sundance-film-festival-to-take-place-january-21-31-in-boulder-colorado/)
+- [SundanceBoCo venue map](https://sundanceboco.com/venues) — independent/unofficial cross-reference
+- Basemap: [OpenStreetMap](https://www.openstreetmap.org), publicly served tiles with OSM attribution.
+- Building footprints, address resolution, street centerlines: City's public ArcGIS REST services. External datasets and the City's public Cone Zones map may temporarily be unavailable. Venue pins are no longer dependent on those background GIS calls.
 
-For folder sync, Edge/Chrome Chromium-based browsers support folder access; drag/drop and folder-picker import remain available as fallbacks. The application does not need a City login, City IT privileges, or a map API key for its public data layers.
-
-## Known operational boundaries
-
-- **Single station / browser storage only.** Opening the URL on a second computer will not automatically share imported permits, saved corridors, or annotations. Shared deployment will require a backend, authentication, and appropriate City approval for non-public records.
-- City GIS and the public Cone Zones Experience are external services. They can be unavailable or change their exposed schema; the tool distinguishes unmatched locations and service errors for permits, and reports unresolved venue locations.
-- The location panel is not a professional land-survey/geocoder certification. Verify spatial assessments and operational impacts as appropriate. No automatic claim of ROW impact is made.
-- Dark tiles are CSS-adapted OpenStreetMap imagery, not a separate officially designed dark cartography product. The standard OSM tiles and relevant attribution remain intact.
-
-## Venue reference
-
-Official location inventory: Boulder Theater; Boulder High School Auditorium; Casey Middle School Auditorium; Chautauqua Auditorium; Cinemark Century Boulder; eTown Hall; Dairy Arts Center (Boedecker + Gordon Gamm + programming); Macky Auditorium; Muenzinger Auditorium; Roe Green Theatre (University Theatre); Old Main; Canyon Theater at Boulder Public Library. The app uses verified published site addresses or publicly identifiable City building names. Any site lacking a confident map lookup stays explicitly marked unresolved rather than inventing coordinates.
+**Testing:** The page's real JavaScript/CSS was exercised in a browser using local stand-ins for external mapping libraries/services (checking theme switching, appearance editing, 12-venue initialization, and no startup errors). Unit tests covered 16 sample permit *filenames*, state migration, category defaults and permit clearing. A complete live hosted-browser test against the real Boulder GIS, basemap, and Cone Zones endpoints must still be performed after publishing.

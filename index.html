@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light" data-app-version="2.5.1">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
+  <meta name="color-scheme" content="dark light" />
   <title>Pas de Deux — Boulder</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="preconnect" href="https://tile.openstreetmap.org" />
@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=2.5.1" />
 </head>
 <body>
   <header class="appbar">
@@ -19,11 +19,11 @@
       <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
       <div>
         <h1>Pas de Deux</h1>
-        <p>Sundance + Permit Coordination <span>•</span> Boulder <span>•</span> Jan 21–31, 2027</p>
+        <p>BOULDER <span class="brand-separator">/</span> SUNDANCE 2027 <span class="brand-separator">/</span> JAN 21–31</p>
       </div>
     </div>
     <div class="app-actions">
-      <label class="theme-control" for="themeMode"><span>Theme</span><select id="themeMode" aria-label="Map theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <div class="theme-switch" role="group" aria-label="Appearance"><button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="true">Dark</button></div>
       <button id="connectFolderBtn" class="button primary">Connect permit folder</button>
       <label class="button" for="filePicker">Import filenames</label>
       <input id="filePicker" type="file" multiple webkitdirectory directory hidden />
@@ -43,6 +43,7 @@
 
   <main class="workspace">
     <aside class="sidebar">
+      <div class="sidebar-context"><span class="context-eyebrow">OPERATIONS OVERVIEW</span><div class="context-title">Sundance 2027 <span class="context-pill">BOULDER</span></div><div class="context-subtitle">Live geographic context · staff-assessed impacts</div></div>
       <div class="summary-strip">
         <div><strong id="visibleCount">0</strong><span>Visible</span></div>
         <div><strong id="totalCount">0</strong><span>Total</span></div>
@@ -52,11 +53,11 @@
       <section class="section">
         <div class="section-head">
           <h2>Map layers</h2>
-          <button id="fitAllBtn" class="link-button">Fit map</button>
+          <button id="fitAllBtn" class="link-button">Fit all</button>
         </div>
         <div class="layer-grid">
           <label class="toggle-row"><input id="layerPermits" type="checkbox" checked /><span>Permits</span></label>
-          <label class="toggle-row"><input id="layerVenues" type="checkbox" checked /><span>Sundance sites</span></label>
+          <label class="toggle-row"><input id="layerVenues" type="checkbox" checked /><span>Sundance venues <span id="venueCountBadge" class="inline-count">12</span></span></label>
           <label class="toggle-row"><input id="layerBuildings" type="checkbox" checked /><span>Venue buildings</span></label>
           <label class="toggle-row"><input id="layerVenueContext" type="checkbox" /><span>500-ft venue context</span></label>
           <label class="toggle-row"><input id="layerCorridors" type="checkbox" checked /><span>Corridors</span></label>
@@ -64,22 +65,8 @@
         </div>
         <div id="coneZonesStatus" class="layer-status" hidden></div>
         <div id="venueStatus" class="layer-status venue-status" hidden></div>
+        <div class="venue-quick"><button type="button" id="showVenuesBtn" class="venue-focus-button"><span><span class="venue-focus-mark"></span>Focus on festival sites</span><span aria-hidden="true">↗</span></button></div>
         <p class="reference-link">Venue sources: <a href="https://sundanceboco.com/venues" target="_blank" rel="noopener noreferrer">SundanceBoCo ↗</a> · <a href="https://www.sundance.org/blogs/2027-sundance-film-festival-to-take-place-january-21-31-in-boulder-colorado/" target="_blank" rel="noopener noreferrer">Sundance official ↗</a></p>
-      </section>
-
-      <section class="section marker-settings">
-        <div class="section-head"><h2>Permit pin appearance</h2></div>
-        <p class="setting-help">Choose high-visibility markers. The source records remain unchanged.</p>
-        <label class="field"><span>Color mode</span><select id="pinColorMode"><option value="status">By status</option><option value="single">One color for all permits</option></select></label>
-        <div id="pinPaletteControls" hidden>
-          <span class="control-label">Pin color</span>
-          <div id="pinPalette" class="pin-palette" role="group" aria-label="Permit pin color"></div>
-          <label class="custom-color"><span>Custom color</span><input id="pinColorCustom" type="color" value="#2563eb" aria-label="Custom pin color" /></label>
-        </div>
-        <div class="two-col">
-          <label class="field"><span>Shape</span><select id="pinShape"><option value="pin">Map pin</option><option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option></select></label>
-          <label class="field"><span>Size</span><select id="pinSize"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
-        </div>
       </section>
 
       <section class="section">
@@ -99,7 +86,7 @@
 
       <section class="section filters">
         <div class="section-head">
-          <h2>Permit filters</h2>
+          <h2>Filter permits</h2>
           <button id="resetFiltersBtn" class="link-button">Reset</button>
         </div>
 
@@ -122,13 +109,14 @@
       </section>
 
       <section class="section compact-section">
-        <button id="showUnlocatedBtn" class="button full location-review-btn">Location review <span id="locationReviewCount" class="count-badge">0</span></button>
+        <button id="showUnlocatedBtn" class="button full location-review-btn">Needs location review <span id="locationReviewCount" class="count-badge">0</span></button>
         <p class="source-note">Filename-derived source values remain verbatim. Any capitalization cleanup is display-only.</p>
       </section>
     </aside>
 
     <section class="map-wrap">
       <div id="map"></div>
+      <div class="map-label" aria-hidden="true"><span class="map-label-dot"></span>FIELD OPERATIONS MAP <span class="map-label-slash">/</span> BOULDER, CO</div>
 
       <div id="corridorModeBar" class="mode-bar" hidden>
         <div>
@@ -143,9 +131,23 @@
         <button id="cancelManualPinBtn" class="button inverse">Cancel</button>
       </div>
 
+      <div id="markerEditor" class="marker-editor" hidden aria-label="Marker appearance">
+        <div class="marker-editor-head"><div><span class="eyebrow">MAP APPEARANCE</span><h3 id="markerEditorTitle">Permit pins</h3></div><button type="button" id="closeMarkerEditor" class="marker-editor-close" aria-label="Close marker settings">×</button></div>
+        <p class="marker-editor-help">These are default map styles. Existing permit records stay unchanged.</p>
+        <label class="field" id="pinColorModeWrap"><span>Permit colors</span><select id="pinColorMode"><option value="single">One color</option><option value="status">By status</option></select></label>
+        <div id="pinPaletteControls">
+          <span class="control-label">Marker color</span>
+          <div id="pinPalette" class="pin-palette" role="group" aria-label="Default marker color"></div>
+          <label class="custom-color"><span>Custom</span><input id="pinColorCustom" type="color" value="#1e779e" aria-label="Custom marker color" /></label>
+        </div>
+        <div class="two-col">
+          <label class="field"><span>Shape</span><select id="pinShape"><option value="pin">Map pin</option><option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option></select></label>
+          <label class="field"><span>Size</span><select id="pinSize"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
+        </div>
+      </div>
       <div id="mapKey" class="map-key">
-        <button id="mapKeyToggle" aria-expanded="false">Map key</button>
-        <div id="mapKeyBody" hidden></div>
+        <button id="mapKeyToggle" type="button" aria-expanded="true">Map key <span aria-hidden="true">⌄</span></button>
+        <div id="mapKeyBody"></div>
       </div>
 
       <div id="dropZone" class="drop-zone" aria-hidden="true">
@@ -233,6 +235,6 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
-  <script src="./app.js"></script>
+  <script src="./app.js?v=2.5.1"></script>
 </body>
 </html>

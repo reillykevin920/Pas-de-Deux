@@ -15,26 +15,28 @@
   const CONE_ZONES_EXPERIENCE_ID = '45ea51935a18499281af2980bfa3b7e5';
   const ARCGIS_ITEMS_ROOT = 'https://www.arcgis.com/sharing/rest/content/items';
 
-  // 12 physical venue locations / 15 official programming entries (Boedecker, Gordon Gamm,
-  // Dairy and eTown each share physical venues). Cross-checked with Sundance's 2027 announcement.
-  // Addresses are public site addresses; no arbitrary coordinate guesses or silent fallback markers.
+  // 12 source-verified physical venue sites (15 programming entries share some buildings).
+  // Coordinates: OpenStreetMap mapped venue geometries, eTown and CU venue websites,
+  // Boulder Library, USGS/GeoNames. See README venue-source ledger.
+  // Unlike GIS address lookups, these trusted coordinates are available immediately.
+  // Reference points are NOT substituted for permit location matches.
   const VENUES = [
-    { id:'boulder-theater', name:'Boulder Theater', addressNumber:'2032', street:'14th', address:'2032 14th St', uses:'Screenings' },
-    { id:'boulder-high', name:'Boulder High School Auditorium', addressNumber:'1604', street:'Arapahoe', address:'1604 Arapahoe Ave', uses:'Screenings' },
-    { id:'casey', name:'Casey Middle School Auditorium', addressNumber:'1301', street:'High', address:'1301 High St', uses:'Screenings' },
-    { id:'chautauqua', name:'Chautauqua Auditorium', addressNumber:'100', street:'Morning Glory', address:'100 Morning Glory Dr', uses:'Screenings' },
-    { id:'cinemark', name:'Cinemark Century Boulder', addressNumber:'1700', street:'29th', address:'1700 29th St', uses:'Press & industry screenings' },
-    { id:'etown', name:'eTown Hall', addressNumber:'1535', street:'Spruce', address:'1535 Spruce St', uses:'Screenings • talks & festival programming' },
-    { id:'dairy', name:'Dairy Arts Center', addressNumber:'2590', street:'Walnut', address:'2590 Walnut St', uses:'Boedecker Theater • Gordon Gamm Theater • talks & festival programming' },
-    { id:'macky', name:'Macky Auditorium Concert Hall', addressNumber:'1595', street:'Pleasant', address:'1595 Pleasant St', uses:'Screenings' },
-    { id:'muenzinger', name:'Muenzinger Auditorium', addressNumber:'1905', street:'Colorado', address:'1905 Colorado Ave', uses:'Screenings' },
-    { id:'roe-green', name:'Roe Green Theatre (CU University Theatre)', addressNumber:'', street:'', address:'University Theatre Building, Norlin Quadrangle, CU Boulder', uses:'Screenings', searchByName:true },
-    { id:'old-main', name:'Old Main', addressNumber:'1600', street:'Pleasant', address:'1600 Pleasant St', uses:'Talks & festival programming' },
-    { id:'canyon', name:'Canyon Theater — Boulder Public Library', addressNumber:'1001', street:'Arapahoe', address:'1001 Arapahoe Ave', uses:'Talks & festival programming' }
+    { id:'boulder-theater', name:'Boulder Theater', addressNumber:'2032', street:'14th', address:'2032 14th St', lat:40.01919,lng:-105.27724, uses:'Screenings' },
+    { id:'boulder-high', name:'Boulder High School Auditorium', addressNumber:'1604', street:'Arapahoe', address:'1604 Arapahoe Ave',lat:40.01327,lng:-105.27514, uses:'Screenings' },
+    { id:'casey', name:'Casey Middle School Auditorium', addressNumber:'1301', street:'High', address:'1301 High St',lat:40.02296,lng:-105.27990, uses:'Screenings' },
+    { id:'chautauqua', name:'Chautauqua Auditorium', addressNumber:'100', street:'Morning Glory', address:'100 Morning Glory Dr',lat:39.99772,lng:-105.28017, uses:'Screenings' },
+    { id:'cinemark', name:'Cinemark Century Boulder', addressNumber:'1700', street:'29th', address:'1700 29th St',lat:40.01729,lng:-105.25430, uses:'Press & industry screenings' },
+    { id:'etown', name:'eTown Hall', addressNumber:'1535', street:'Spruce', address:'1535 Spruce St',lat:40.020236,lng:-105.275482, uses:'Screenings • talks & festival programming' },
+    { id:'dairy', name:'Dairy Arts Center', addressNumber:'2590', street:'Walnut', address:'2590 Walnut St',lat:40.01940,lng:-105.26104, uses:'Boedecker Theater • Gordon Gamm Theater • talks & festival programming' },
+    { id:'macky', name:'Macky Auditorium Concert Hall', addressNumber:'1595', street:'Pleasant', address:'1595 Pleasant St',lat:40.009722,lng:-105.272762, uses:'Screenings' },
+    { id:'muenzinger', name:'Muenzinger Auditorium', addressNumber:'1905', street:'Colorado', address:'1905 Colorado Ave',lat:40.00870,lng:-105.26896, uses:'Screenings' },
+    { id:'roe-green', name:'Roe Green Theatre (CU University Theatre)', addressNumber:'', street:'', address:'University Theatre Building, Norlin Quadrangle, CU Boulder',lat:40.00810,lng:-105.27350, uses:'Screenings', searchByName:true },
+    { id:'old-main', name:'Old Main', addressNumber:'1600', street:'Pleasant', address:'1600 Pleasant St',lat:40.00923,lng:-105.27339, uses:'Talks & festival programming' },
+    { id:'canyon', name:'Canyon Theater — Boulder Public Library', addressNumber:'1001', street:'Arapahoe', address:'1001 Arapahoe Ave',lat:40.013957,lng:-105.281805, uses:'Talks & festival programming' }
   ];
   const STATUS_VALUES = ['In Review','Upcoming','Active','Closed'];
   const PIN_COLORS = ['#2563eb','#ea580c','#be123c','#0f766e','#7c3aed','#111827','#eab308','#e11d48'];
-  const DEFAULT_APPEARANCE = { theme:'system', pinColorMode:'status', pinColor:'#2563eb', pinShape:'pin', pinSize:'medium' };
+  const DEFAULT_APPEARANCE = { theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium' };
 
   let state = migrateState(loadState());
   let map;
@@ -42,6 +44,8 @@
   let venueLayer;
   let venueBuildingLayer;
   let venueContextLayer;
+  let venueMarkersReady = false;
+  let activeMarkerEditor = 'permits';
   let corridorLayer;
   let corridorPreviewLayer;
   let corridorEndpointLayer;
@@ -73,6 +77,7 @@
     cacheElements();
     applyTheme();
     initMap();
+    loadVerifiedVenues();
     initStatusFilters();
     initAppearanceControls();
     bindUI();
@@ -89,60 +94,109 @@
     folderHandle = await idbGet('permitFolder');
     updateFolderButton();
     rebuildCorridors();
-    await resolveVenues();
-    await locateUnlocatedPermits({ quiet:true });
+    // Background geographic enrichment must never delay the map becoming usable.
     renderAll();
+    void resolveVenueBuildings();
+    void locateUnlocatedPermits({ quiet:true }).then(renderAll).catch(err=>console.warn('Permit lookup unavailable',err));
   }
 
   function cacheElements() {
     [
-      'visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','themeMode','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
+      'visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
       'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
-      'mapKeyToggle','mapKeyBody','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
+      'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
       'deletePermitBtn','streetScopeDialog','streetScopeForm','selectedStreetName','wholeStreetBtn','streetSectionBtn','corridorDialog','corridorForm',
       'unlocatedDialog','closeUnlocatedBtn','unlocatedList'
     ].forEach(id => els[id] = document.getElementById(id));
   }
 
-  function actualTheme() {
-    return state.appearance.theme==='system' ? (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light') : state.appearance.theme;
+  function applyTheme() {
+    // No "System" option: the user always chooses a real, predictable appearance.
+    const theme=state.appearance.theme==='light'?'light':'dark';
+    document.documentElement.dataset.theme=theme;
+    document.documentElement.style.colorScheme=theme;
+    document.querySelectorAll('[data-theme-choice]').forEach(button=>{
+      const active=button.dataset.themeChoice===theme;
+      button.setAttribute('aria-pressed',String(active));
+    });
+    if (map) map.invalidateSize({pan:false});
   }
 
-  function applyTheme() {
-    document.documentElement.dataset.theme=actualTheme();
-    if (els.themeMode) els.themeMode.value=state.appearance.theme;
+  function appearanceFor(category) {
+    const a=state.appearance;
+    return category==='venues'
+      ? {color:a.venueColor,shape:a.venueShape,size:a.venueSize,mode:'single'}
+      : {color:a.pinColor,shape:a.pinShape,size:a.pinSize,mode:a.pinColorMode};
   }
 
   function initAppearanceControls() {
-    const a=state.appearance;
-    els.pinColorMode.value=a.pinColorMode;
-    els.pinShape.value=a.pinShape;
-    els.pinSize.value=a.pinSize;
-    els.pinColorCustom.value=a.pinColor;
-    els.pinPalette.innerHTML=PIN_COLORS.map(c=>`<button type="button" class="palette-swatch" data-color="${c}" aria-label="Use ${c} pin color" title="${c}" style="--swatch:${c}"></button>`).join('');
-    if (!els.pinPalette.dataset.bound) els.pinPalette.addEventListener('click',e=>{ const b=e.target.closest('button[data-color]'); if (!b) return; state.appearance.pinColor=b.dataset.color; els.pinColorCustom.value=b.dataset.color; updateAppearance(); });
+    // Styles are managed exclusively by clicking the two categories inside the map key.
+    els.pinPalette.innerHTML=PIN_COLORS.map(c=>`<button type="button" class="palette-swatch" data-color="${c}" aria-label="Use ${c} marker color" title="${c}" style="--swatch:${c}"></button>`).join('');
+    if (!els.pinPalette.dataset.bound) els.pinPalette.addEventListener('click',e=>{
+      const b=e.target.closest('button[data-color]'); if (!b) return;
+      els.pinColorCustom.value=b.dataset.color;
+      updateAppearance({color:b.dataset.color});
+    });
     els.pinPalette.dataset.bound='1';
-    els.pinPaletteControls.hidden=a.pinColorMode!=='single';
-    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===a.pinColor)));
+    if (!els.mapKeyBody.dataset.bound) els.mapKeyBody.addEventListener('click',e=>{
+      const button=e.target.closest('[data-style-category]');
+      if (!button) return;
+      const category=button.dataset.styleCategory;
+      if (!els.markerEditor.hidden && activeMarkerEditor===category) closeMarkerEditor();
+      else openMarkerEditor(category);
+    });
+    els.mapKeyBody.dataset.bound='1';
+    if (!els.closeMarkerEditor.dataset.bound) els.closeMarkerEditor.addEventListener('click',closeMarkerEditor);
+    els.closeMarkerEditor.dataset.bound='1';
+    if (!document.documentElement.dataset.markerDismissBound) document.addEventListener('pointerdown',e=>{
+      if (!els.markerEditor.hidden && !e.target.closest('#markerEditor,#mapKey')) closeMarkerEditor();
+    });
+    document.documentElement.dataset.markerDismissBound='1';
     updateLegend();
-    if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{ if (state.appearance.theme==='system') applyTheme(); });
   }
 
-  function updateAppearance() {
-    state.appearance.pinColorMode=els.pinColorMode.value;
-    state.appearance.pinShape=els.pinShape.value;
-    state.appearance.pinSize=els.pinSize.value;
-    els.pinPaletteControls.hidden=state.appearance.pinColorMode!=='single';
-    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===state.appearance.pinColor)));
-    saveState(); renderPermits(); updateLegend();
+  function openMarkerEditor(category) {
+    activeMarkerEditor=category;
+    const data=appearanceFor(category);
+    els.markerEditorTitle.textContent=category==='venues'?'Sundance site markers':'Permit markers';
+    els.pinColorModeWrap.hidden=category==='venues';
+    els.pinColorMode.value=data.mode;
+    els.pinColorCustom.value=data.color;
+    els.pinShape.value=data.shape;
+    els.pinSize.value=data.size;
+    els.pinPaletteControls.hidden=category==='permits' && data.mode==='status';
+    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===data.color)));
+    els.markerEditor.hidden=false;
+    updateLegend();
+  }
+
+  function closeMarkerEditor() { els.markerEditor.hidden=true; updateLegend(); }
+
+  function updateAppearance({color}={}) {
+    const a=state.appearance;
+    if (activeMarkerEditor==='venues') {
+      a.venueColor=color||els.pinColorCustom.value;
+      a.venueShape=els.pinShape.value;
+      a.venueSize=els.pinSize.value;
+      renderVenueMarkers();
+    } else {
+      a.pinColorMode=els.pinColorMode.value;
+      a.pinColor=color||els.pinColorCustom.value;
+      a.pinShape=els.pinShape.value;
+      a.pinSize=els.pinSize.value;
+      els.pinPaletteControls.hidden=a.pinColorMode==='status';
+      renderPermits();
+    }
+    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===(activeMarkerEditor==='venues'?a.venueColor:a.pinColor))));
+    saveState();updateLegend();
   }
 
   function pinColor(p) {
     if (p.pinColorOverride) return p.pinColorOverride;
     if (state.appearance.pinColorMode==='single') return state.appearance.pinColor;
-    return ({ 'In Review':'#64748b', Upcoming:'#2563eb',Active:'#d97706',Closed:'#77808c' })[p.status] || '#64748b';
+    return ({ 'In Review':'#718091', Upcoming:'#307fb4',Active:'#d97736',Closed:'#8f99a4' })[p.status] || '#718091';
   }
   function pinShape(p) { return p.pinShapeOverride || state.appearance.pinShape; }
   function permitIcon(p) {
@@ -156,10 +210,19 @@
     if (!els.mapKeyBody) return;
     const a=state.appearance;
     const swatch=(color,shape)=>`<i class="legend-marker pd-${shape}" style="--pin-color:${color}"></i>`;
-    const rows=a.pinColorMode==='status'
-      ? STATUS_VALUES.map(s=>`<div>${swatch(pinColor({status:s}),a.pinShape)} ${escapeHtml(s)}</div>`).join('')
-      : `<div>${swatch(a.pinColor,a.pinShape)} Permit (${escapeHtml(a.pinSize)})</div>`;
-    els.mapKeyBody.innerHTML=rows+`<div><i class="legend-marker pd-circle" style="--pin-color:#b39a36"></i> Sundance site</div><div><i class="corridor-key"></i> Designated corridor</div><div><i class="cone-key"></i> Cone Zones</div><div class="legend-note">Individual pin overrides may differ.</div>`;
+    const permitColors=a.pinColorMode==='status'
+       ? `<div class="legend-status-swatches">${STATUS_VALUES.map(s=>`<span title="${escapeHtml(s)}" style="--swatch:${pinColor({status:s})}"></span>`).join('')}</div>`
+       : swatch(a.pinColor,a.pinShape);
+    els.mapKeyBody.innerHTML=`
+      <button type="button" class="legend-edit-row" data-style-category="permits" aria-label="Edit default permit marker appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='permits'}">
+        <span class="legend-edit-left">${permitColors}<span>Permits</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
+      </button>
+      <button type="button" class="legend-edit-row" data-style-category="venues" aria-label="Edit default Sundance site marker appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='venues'}">
+        <span class="legend-edit-left">${swatch(a.venueColor,a.venueShape)}<span>Sundance sites</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
+      </button>
+      <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
+      <div class="legend-static-row"><i class="cone-key"></i><span>Cone Zones</span></div>
+      <div class="legend-note">Click a marker category to customize it.</div>`;
   }
 
   function initMap() {
@@ -243,11 +306,12 @@
     els.backupBeforeClearBtn.addEventListener('click', exportBackup);
     els.clearConfirmInput.addEventListener('input', () => { els.confirmClearPermitsBtn.disabled=els.clearConfirmInput.value.trim()!=='CLEAR'; });
     els.clearPermitsForm.addEventListener('submit', clearAllPermits);
-    els.themeMode.addEventListener('change', () => { state.appearance.theme=els.themeMode.value; applyTheme(); saveState(); });
-    els.pinColorMode.addEventListener('change', updateAppearance);
-    els.pinColorCustom.addEventListener('input', () => { state.appearance.pinColor=els.pinColorCustom.value; updateAppearance(); });
-    els.pinShape.addEventListener('change', updateAppearance);
-    els.pinSize.addEventListener('change', updateAppearance);
+    document.querySelectorAll('[data-theme-choice]').forEach(button=>button.addEventListener('click',()=>{state.appearance.theme=button.dataset.themeChoice;applyTheme();saveState();}));
+    els.showVenuesBtn.addEventListener('click',fitVenues);
+    els.pinColorMode.addEventListener('change', () => updateAppearance());
+    els.pinColorCustom.addEventListener('input', () => updateAppearance());
+    els.pinShape.addEventListener('change', () => updateAppearance());
+    els.pinSize.addEventListener('change', () => updateAppearance());
 
     els.fitAllBtn.addEventListener('click', fitAll);
     els.addCorridorBtn.addEventListener('click', () => { els.corridorActions.hidden = !els.corridorActions.hidden; });
@@ -296,6 +360,7 @@
     });
 
     document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !els.markerEditor.hidden) { closeMarkerEditor(); }
       if (e.key === 'Escape' && (mapMovePermitId||manualPlacePermitId)) { e.preventDefault();cancelManualPermitPlacement(); }
       else if (e.key === 'Escape' && corridorMode) { e.preventDefault(); cancelCorridorMode(); }
     }, true);
@@ -485,22 +550,37 @@
     return score;
   }
 
-  async function resolveVenues() {
+  function loadVerifiedVenues() {
+    // Render synchronously. Never gate venue pins on the GIS network or building polygons.
     venueLayer.clearLayers(); venueBuildingLayer.clearLayers(); venueContextLayer.clearLayers(); venueRuntime.clear();
-    const unresolved=[];
     for (const venue of VENUES) {
-      try {
-        const loc = venue.searchByName ? await queryNamedVenueBuilding(venue) : await queryAddressPoint(venue.addressNumber, venue.street);
-        if (!loc || loc.ambiguous) { unresolved.push(venue.name); continue; }
-        venue.lat=loc.lat; venue.lng=loc.lng; venue.matchedFullAddr=loc.fullAddr; venueRuntime.set(venue.id,venue);
-        addVenueMarker(venue);
-        L.circle([venue.lat,venue.lng], { radius:VENUE_NEAR_FEET*.3048, color:'#b39a36', weight:1, opacity:.35, fillColor:'#b39a36', fillOpacity:.035, dashArray:'4 5', interactive:false }).addTo(venueContextLayer);
-        await addVenueBuilding(venue);
-      } catch (err) { unresolved.push(venue.name); console.warn('Venue lookup failed', venue.name, err); }
+      if (!Number.isFinite(venue.lat)||!Number.isFinite(venue.lng)) continue;
+      venueRuntime.set(venue.id,venue);
+      addVenueMarker(venue);
+      L.circle([venue.lat,venue.lng],{radius:VENUE_NEAR_FEET*.3048,color:'#e8ac5d',weight:1,opacity:.45,fillColor:'#e8ac5d',fillOpacity:.055,dashArray:'4 6',interactive:false}).addTo(venueContextLayer);
     }
-    els.venueStatus.textContent = unresolved.length ? `${venueRuntime.size}/${VENUES.length} venue locations mapped. Unresolved: ${unresolved.join(', ')}. No locations guessed.` : `${VENUES.length} venue sites located using Boulder public GIS (some spaces share buildings).`;
-    els.venueStatus.hidden = false;
+    venueMarkersReady=true;
+    if (els.venueCountBadge) els.venueCountBadge.textContent=String(venueRuntime.size);
+    if (els.venueStatus) {els.venueStatus.textContent=`${venueRuntime.size} verified venue sites mapped. Building outlines load separately when public GIS is available.`;els.venueStatus.hidden=false;}
     updateLayerVisibility();
+  }
+
+  async function resolveVenueBuildings() {
+    // Lightweight, concurrent but bounded footprint lookup; a slow GIS service cannot blank venues.
+    const venues=[...venueRuntime.values()];let successful=0;
+    for (let i=0;i<venues.length;i+=3) {
+      const results=await Promise.allSettled(venues.slice(i,i+3).map(venue=>addVenueBuilding(venue)));
+      successful+=results.filter(r=>r.status==='fulfilled').length;
+    }
+    if (els.venueStatus) {
+      els.venueStatus.textContent=`${venueRuntime.size} verified sites displayed${successful<venues.length?` · Building outlines partially unavailable (${successful}/${venues.length} queries returned)`:' · Building outline lookup complete'}.`;
+    }
+  }
+
+  function fitVenues() {
+    const coords=[...venueRuntime.values()].map(v=>[v.lat,v.lng]);
+    if (coords.length) map.fitBounds(coords,{padding:[65,65],maxZoom:14});
+    else toast('No verified venue locations currently available.');
   }
 
   async function queryNamedVenueBuilding(venue) {
@@ -514,8 +594,16 @@
     return {lat,lng,fullAddr:'City building name: University Theatre'};
   }
 
+  function renderVenueMarkers() {
+    venueLayer.clearLayers();
+    for (const venue of venueRuntime.values()) addVenueMarker(venue);
+    updateLegend();
+  }
+
   function addVenueMarker(venue) {
-    const icon=L.divIcon({ className:'', html:'<div class="venue-marker"><span></span></div>', iconSize:[22,22], iconAnchor:[11,11] });
+    const a=state.appearance;
+    const size=({small:18,medium:24,large:30})[a.venueSize]||24;
+    const icon=L.divIcon({ className:'venue-div-icon', html:`<div class="pd-marker pd-${a.venueShape} venue-shape" style="--pin-color:${a.venueColor};--pin-size:${size}px"><span></span></div>`, iconSize:[size+12,size+12], iconAnchor:[(size+12)/2,(size+12)/2], popupAnchor:[0,-size/2] });
     const marker=L.marker([venue.lat,venue.lng],{icon,zIndexOffset:500});
     marker.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Address</span>${escapeHtml(venue.address)}</div><div class="popup-row"><span class="popup-label">Use</span>${escapeHtml(venue.uses)}</div><div class="venue-source"><a href="https://www.sundance.org/blogs/2027-sundance-film-festival-to-take-place-january-21-31-in-boulder-colorado/" target="_blank" rel="noopener noreferrer">Sundance official venue roster ↗</a></div>`).addTo(venueLayer);
   }
@@ -1421,7 +1509,7 @@
       const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
       if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
       if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); initAppearanceControls(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
+      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
     } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
   }
 
@@ -1454,7 +1542,7 @@
 
   function migrateState(input) {
     const candidate={...DEFAULT_APPEARANCE,...(input.appearance||{})};
-    const appearance={theme:['system','light','dark'].includes(candidate.theme)?candidate.theme:'system',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'status',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#2563eb',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium'};
+    const appearance={theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium'};
     const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[],appearance};
     for (const p of output.permits) {
       if (p.status==='Application') p.status='Upcoming';

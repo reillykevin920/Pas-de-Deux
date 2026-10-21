@@ -115,3 +115,145 @@ button{cursor:pointer}
 :root[data-theme="dark"] .popup-warning{background:#513429;color:#ffd6bf}
 .manual-mode-bar{top:16px;z-index:950}
 @media(max-width:750px){.review-actions{flex-wrap:wrap;justify-content:flex-end}.unlocated-row{align-items:flex-start}}
+
+/* === Pas de Deux 2.5 — quiet, professional operations UI === */
+:root {
+  --ink:#1c3041; --muted:#617384; --line:#dce5eb; --line-strong:#c6d3dc;
+  --panel:#ffffff; --soft:#f1f5f8; --soft-blue:#e5f0f6;
+  --navy:#19415a; --navy-2:#245773; --blue:#176e96;
+  --blue-soft:#e3eff5; --shadow:0 14px 45px rgba(19,43,60,.14);
+  --page:#edf2f5; --map-panel:rgba(255,255,255,.96); --map-border:rgba(55,85,104,.17);
+  --on-accent:#ffffff; --map-filter:none;
+  color-scheme:light;
+}
+:root[data-theme="dark"] {
+  /* This is a readable SLATE theme, deliberately not a black/night-vision map. */
+  --ink:#f0f4f7; --muted:#b8c7d1; --line:#435e70; --line-strong:#668092;
+  --panel:#344d60; --soft:#3e596b; --soft-blue:#476b7e;
+  --navy:#244358; --navy-2:#365b71; --blue:#aedaf2;
+  --blue-soft:#395c70; --shadow:0 14px 48px rgba(25,43,56,.24);
+  --page:#293f50; --map-panel:rgba(51,73,88,.97); --map-border:rgba(188,210,223,.25);
+  --on-accent:#fff; --map-filter:grayscale(.08) brightness(.90) saturate(.80) contrast(.95);
+  color-scheme:dark;
+}
+html, body {background:var(--page);color:var(--ink);font-size:14px}
+button,select,input,textarea{accent-color:#2e789d}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #52abcb;outline-offset:2px}
+.appbar {height:78px;padding:0 24px;background:var(--panel)!important;border-color:var(--line);box-shadow:0 2px 18px rgba(20,42,54,.055);gap:20px}
+.brand-lockup{gap:14px}
+.brand-mark{width:38px;height:38px;border-radius:12px;background:#24495e;padding:9px;gap:5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.16)}
+.brand-mark span{background:#f5f9fb}
+.brand-lockup h1{font-size:22px;font-weight:760;letter-spacing:-.055em;margin-bottom:5px}
+.brand-lockup p{font-size:10px;letter-spacing:.095em;text-transform:uppercase;color:var(--muted);font-weight:680;white-space:nowrap}
+.brand-lockup p .brand-separator{padding:0 7px;color:var(--muted);opacity:.6}
+.app-actions{gap:10px}
+.button,.theme-switch button {transition:background .15s ease,border-color .15s ease,transform .12s ease}
+.button{min-height:38px;padding:10px 15px;background:var(--panel);border:1px solid var(--line-strong);color:var(--ink);font-size:12px;border-radius:9px;box-shadow:none}
+.button:hover{background:var(--soft);border-color:var(--muted)}
+.button.primary{background:#225773;border-color:#225773;color:white}
+.button.primary:hover{background:#1a4862}
+.button.quiet{background:var(--soft);color:var(--ink)}
+.theme-switch{display:flex;align-items:center;padding:3px;gap:2px;background:var(--soft);border:1px solid var(--line);border-radius:11px;flex-shrink:0}
+.theme-switch button{border:0;background:transparent;color:var(--muted);font-size:11px;font-weight:720;border-radius:8px;padding:8px 12px;min-width:49px}
+.theme-switch button[aria-pressed="true"]{background:var(--panel);color:var(--ink);box-shadow:0 1px 5px rgba(21,40,54,.13)}
+.theme-switch button:hover:not([aria-pressed="true"]){color:var(--ink)}
+.workspace{height:calc(100% - 78px);grid-template-columns:340px minmax(0,1fr)}
+.sidebar{background:var(--panel)!important;border-color:var(--line)}
+.sidebar-context{padding:25px 20px 17px;border-bottom:1px solid var(--line)}
+.context-eyebrow,.eyebrow{font-size:9px;letter-spacing:.16em;font-weight:780;color:var(--muted)}
+.context-title{font-size:18px;letter-spacing:-.035em;font-weight:770;margin:9px 0 8px;color:var(--ink)}
+.context-pill{vertical-align:middle;display:inline-flex;font-size:8px;letter-spacing:.08em;border:1px solid var(--line-strong);border-radius:5px;color:var(--muted);padding:4px 6px;margin-left:5px}
+.context-subtitle{font-size:11px;line-height:1.5;color:var(--muted)}
+.summary-strip{padding:15px 12px;background:var(--soft)!important}
+.summary-strip strong{font-size:23px;letter-spacing:-.05em;color:var(--ink)}
+.summary-strip span{font-size:9px;font-weight:700;color:var(--muted)}
+.section{padding:19px 20px 21px;border-color:var(--line)}
+.section-head{margin-bottom:14px}
+.section-head h2{font-size:10px;letter-spacing:.14em;font-weight:790;color:var(--muted)!important}
+.toggle-row{font-size:12px;color:var(--ink)!important;align-items:center}
+.toggle-row input{accent-color:#236b90}
+.layer-grid{gap:9px 14px}
+.reference-link{font-size:10px;line-height:1.65;margin-top:12px}
+.reference-link a{color:var(--blue)}
+.inline-count{font-size:10px;color:var(--muted);background:var(--soft);border:1px solid var(--line);border-radius:20px;padding:2px 6px}
+.venue-quick{margin-top:14px}
+.venue-focus-button{width:100%;padding:10px 12px;border-radius:9px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line-strong);color:var(--ink);background:var(--soft);font-size:11px;font-weight:740;text-align:left}
+.venue-focus-button:hover{border-color:var(--blue);background:var(--soft-blue)}
+.venue-focus-mark{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d39a42;margin-right:6px;box-shadow:0 0 0 3px rgba(205,151,60,.13)}
+.layer-status{background:var(--soft)!important;color:var(--muted)!important;border:1px solid var(--line)}
+.source-note{color:var(--muted)}
+.map-wrap{background:#b9cad2}
+.map-label{position:absolute;left:20px;top:17px;z-index:450;pointer-events:none;background:var(--map-panel);border:1px solid var(--map-border);border-radius:8px;box-shadow:0 3px 11px rgba(15,31,44,.1);padding:10px 13px;font-size:9px;letter-spacing:.13em;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:7px}
+.map-label-dot{height:7px;width:7px;background:#3da39a;border-radius:50%;box-shadow:0 0 0 3px rgba(51,162,152,.14)}
+.map-label-slash{color:var(--muted);opacity:.55}
+.leaflet-container{background:#c9d5da}
+:root[data-theme="dark"] .leaflet-container{background:#94a6b1}
+:root[data-theme="dark"] .leaflet-tile-pane{filter:var(--map-filter)}
+:root[data-theme="light"] .leaflet-tile-pane{filter:none}
+/* Float controls away from the legend. */
+.leaflet-top.leaflet-left{margin-top:57px;margin-left:8px}
+.leaflet-control-zoom{border:1px solid var(--map-border)!important;box-shadow:0 2px 9px rgba(24,43,54,.11)!important}
+.leaflet-control-zoom a{background:var(--map-panel)!important;color:var(--ink)!important;border-color:var(--map-border)!important}
+:root[data-theme="dark"] .leaflet-popup-content-wrapper,:root[data-theme="dark"] .leaflet-popup-tip{background:var(--panel);color:var(--ink)}
+:root[data-theme="dark"] .leaflet-popup-content,.leaflet-popup-content .popup-row{color:var(--ink)}
+:root[data-theme="dark"] .cone-zone-details{background:var(--soft);color:var(--ink)}
+:root[data-theme="dark"] .source-block,:root[data-theme="dark"] .field input,:root[data-theme="dark"] .field select,:root[data-theme="dark"] .field textarea,:root[data-theme="dark"] .record-card,:root[data-theme="dark"] .status-chip span,:root[data-theme="dark"] .dialog,:root[data-theme="dark"] .menu,:root[data-theme="dark"] .menu button,:root[data-theme="dark"] .menu label,:root[data-theme="dark"] .icon-button,:root[data-theme="dark"] .scope-card,:root[data-theme="dark"] .choice-button{background:var(--soft);color:var(--ink)}
+:root[data-theme="dark"] .menu button:hover,:root[data-theme="dark"] .menu label:hover{background:var(--soft-blue)}
+:root[data-theme="dark"] .menu,:root[data-theme="dark"] .dialog{background:var(--panel)!important}
+:root[data-theme="dark"] .status-chip input:checked+span{background:#2a738d;color:white;border-color:#2a738d}
+:root[data-theme="dark"] .field>span,:root[data-theme="dark"] .status-grid,.map-key{color:var(--ink)}
+:root[data-theme="dark"] .dialog-intro,:root[data-theme="dark"] .review-reason,:root[data-theme="dark"] .match-info{color:var(--muted)}
+:root[data-theme="dark"] .source-block,:root[data-theme="dark"] .review-toolbar input{border-color:var(--line)}
+:root[data-theme="dark"] .button.inverse{background:transparent;color:white}
+:root[data-theme="dark"] .button.danger-solid{background:#a53549!important;color:white}
+:root[data-theme="dark"] .button.primary{background:#246d8f;color:white}
+:root[data-theme="dark"] .count-badge{background:var(--soft-blue);color:var(--ink)}
+/* Interactive, category-oriented MAP KEY */
+.map-key{bottom:24px;right:22px;width:238px;min-width:238px;overflow:visible;background:var(--map-panel)!important;border:1px solid var(--map-border);border-radius:13px;box-shadow:0 13px 42px rgba(20,39,53,.17)}
+.map-key>button{width:100%;display:flex;align-items:center;justify-content:space-between;background:transparent!important;color:var(--ink)!important;font-size:11px;letter-spacing:.04em;font-weight:790;text-align:left;padding:13px 15px;border-bottom:1px solid var(--line);border-radius:13px 13px 0 0}
+.map-key>button[aria-expanded="false"]{border-bottom:0;border-radius:13px}
+#mapKeyBody{padding:7px 9px 10px;display:block;min-width:0;font-size:11px;color:var(--ink)}
+#mapKeyBody[hidden]{display:none!important}
+.map-key #mapKeyBody .legend-edit-row{width:100%;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;justify-content:space-between;padding:10px 7px;color:var(--ink);font-size:11px;font-weight:710;text-align:left;cursor:pointer;gap:9px}
+.legend-edit-row:hover,.legend-edit-row[aria-pressed="true"]{background:var(--soft-blue)!important}
+.legend-edit-left{display:flex;align-items:center;gap:10px;min-width:0}
+.legend-edit-left>span{white-space:nowrap}
+.legend-edit-hint{font-size:9px;font-weight:650;letter-spacing:.025em;color:var(--muted);white-space:nowrap}
+.map-key #mapKeyBody .legend-static-row{display:flex;align-items:center;gap:10px;margin:0 6px;padding:9px 4px;font-size:10px;border-top:1px solid var(--line);color:var(--muted)}
+#mapKeyBody .legend-note{font-size:9px;color:var(--muted);padding:10px 5px 1px;border-top:1px solid var(--line);line-height:1.45}
+.legend-status-swatches{display:flex;gap:2px}
+.legend-status-swatches span{height:12px;width:4px;border-radius:2px;background:var(--swatch)}
+.legend-marker{height:13px;width:13px;flex:0 0 13px;border:2px solid white;outline:1px solid rgba(32,56,70,.7)}
+.corridor-key{flex:0 0 19px}
+.cone-key{flex:0 0 12px}
+.marker-editor{position:absolute;right:22px;bottom:262px;z-index:802;width:285px;max-width:calc(100% - 32px);max-height:calc(100% - 315px);overflow:auto;background:var(--map-panel);color:var(--ink);border:1px solid var(--map-border);border-radius:14px;box-shadow:0 20px 54px rgba(15,39,53,.25);padding:16px}
+.marker-editor[hidden]{display:none!important}
+.marker-editor-head{display:flex;align-items:start;justify-content:space-between;gap:15px}
+.marker-editor-head h3{margin:6px 0 4px;font-size:17px;letter-spacing:-.045em;font-weight:780}
+.marker-editor-close{background:var(--soft);border:1px solid var(--line);color:var(--ink);width:27px;height:27px;border-radius:7px;font-size:21px;line-height:20px}
+.marker-editor-help{color:var(--muted);font-size:10px;line-height:1.55;margin:5px 0 15px}
+.marker-editor .field{display:block;font-size:10px}
+.marker-editor .field span,.marker-editor .control-label{font-size:9px;color:var(--muted);font-weight:750;letter-spacing:.08em;text-transform:uppercase}
+.marker-editor .field select{width:100%;margin-top:6px;padding:9px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--soft);color:var(--ink)}
+.marker-editor #pinColorModeWrap{margin-bottom:14px}
+.marker-editor #pinPaletteControls{border-top:1px solid var(--line);padding-top:13px;margin-bottom:13px}
+.marker-editor .pin-palette{margin:10px 0 11px;display:grid;grid-template-columns:repeat(8,1fr);gap:8px}
+.marker-editor .palette-swatch{width:23px;height:23px}
+.marker-editor .custom-color{margin:4px 0 0;display:flex;align-items:center;justify-content:space-between;font-size:10px}
+.marker-editor .custom-color input{width:49px;height:30px}
+.marker-editor .two-col{gap:9px}
+/* Venue defaults share the same visible, adjustable marker silhouettes as permits. */
+.venue-div-icon{border:0!important;background:transparent!important}
+.venue-shape{box-shadow:0 0 0 2px rgba(250,250,250,.45),0 3px 8px rgba(0,0,0,.31)}
+/* Better modal/form presentation without undermining existing behavior. */
+.dialog{border-radius:14px;border:1px solid var(--line-strong);background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.dialog .dialog-head h2{color:var(--ink)}
+.dialog .field input,.dialog .field select,.dialog .field textarea{background:var(--panel);color:var(--ink);border-color:var(--line-strong)}
+.dialog .field>span{color:var(--muted)}
+.mode-bar{background:#234b62;box-shadow:0 12px 30px rgba(25,53,74,.23)}
+/* The browser's default focus ring and dialogs still work with both themes. */
+@media(max-width:1080px){.workspace{grid-template-columns:305px minmax(0,1fr)}.appbar{padding:0 15px}.brand-lockup p{font-size:9px}}
+@media(max-width:760px){.appbar{height:auto;min-height:77px;flex-wrap:wrap;padding:11px 12px}.workspace{height:calc(100% - 113px);grid-template-columns:1fr}.sidebar{display:none}.app-actions{width:100%;justify-content:flex-end}.app-actions .button{font-size:10px;padding:9px}.brand-lockup p{display:none}.map-label{display:none}.leaflet-top.leaflet-left{margin-top:10px}.map-key{right:12px;bottom:18px}.marker-editor{right:12px;bottom:257px;max-height:calc(100% - 275px)}}
+@media(max-height:660px){.map-key{bottom:10px}.marker-editor{bottom:12px;right:275px;max-height:calc(100% - 25px)}}
+
+:root[data-theme="dark"] body { background:var(--page); }
