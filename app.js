@@ -1,1370 +1,1537 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'sundance-row-map:v1'; // keep v1 key so first-build data survives the upgrade
-  const DB_NAME = 'sundance-row-map-handles';
-  const DB_STORE = 'handles';
-  const FESTIVAL_START = '2027-01-21';
-  const FESTIVAL_END = '2027-01-31';
-  const VENUE_NEAR_FEET = 500;
-  const BOULDER_CENTER = [40.0176, -105.2797];
+  const DB_NAME = 'client-time-db';
+  const DB_VERSION = 1;
+  const STORE = 'kv';
+  const STATE_KEY = 'app-state';
 
-  const ADDRESS_QUERY = 'https://gis.bouldercolorado.gov/ags_svr1/rest/services/plan/AddressPoints/MapServer/0/query';
-  const BUILDING_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/pw/BuildingFootprints/MapServer/0/query';
-  const STREET_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/trans/StreetsSimple/MapServer/0/query';
-  const CONE_ZONES_EXPERIENCE_ID = '45ea51935a18499281af2980bfa3b7e5';
-  const ARCGIS_ITEMS_ROOT = 'https://www.arcgis.com/sharing/rest/content/items';
+  const appEl = document.getElementById('app');
+  const modalRoot = document.getElementById('modalRoot');
+  const toastEl = document.getElementById('toast');
+  const titleEl = document.getElementById('screenTitle');
+  const headerAction = document.getElementById('headerAction');
+  const navButtons = [...document.querySelectorAll('.nav-item')];
 
-  const VENUES = [
-    { id:'boulder-theater', name:'Boulder Theater', addressNumber:'2032', street:'14th', address:'2032 14th St', uses:'Screenings' },
-    { id:'boulder-high', name:'Boulder High School Auditorium', addressNumber:'1604', street:'Arapahoe', address:'1604 Arapahoe Ave', uses:'Screenings' },
-    { id:'casey', name:'Casey Middle School Auditorium', addressNumber:'1301', street:'High', address:'1301 High St', uses:'Screenings' },
-    { id:'chautauqua', name:'Chautauqua Auditorium', addressNumber:'900', street:'Baseline', address:'900 Baseline Rd', uses:'Screenings' },
-    { id:'cinemark', name:'Cinemark Century Boulder', addressNumber:'1700', street:'29th', address:'1700 29th St', uses:'Press & industry screenings' },
-    { id:'etown', name:'eTown Hall', addressNumber:'1535', street:'Spruce', address:'1535 Spruce St', uses:'Screenings + programming' },
-    { id:'dairy', name:'Dairy Arts Center', addressNumber:'2590', street:'Walnut', address:'2590 Walnut St', uses:'Boedecker Theater • Gordon Gamm Theater • programming' },
-    { id:'macky', name:'Macky Auditorium Concert Hall', addressNumber:'1595', street:'Pleasant', address:'1595 Pleasant St', uses:'Screenings' },
-    { id:'muenzinger', name:'Muenzinger Auditorium', addressNumber:'1905', street:'Colorado', address:'1905 Colorado Ave', uses:'Screenings' },
-    { id:'roe-green', name:'Roe Green Theatre', addressNumber:'1515', street:'Central Campus Mall', address:'1515 Central Campus Mall', uses:'Screenings' },
-    { id:'old-main', name:'Old Main', addressNumber:'1540', street:'Pleasant', address:'1540 Pleasant St', uses:'Talks + programming' },
-    { id:'canyon', name:'Canyon Theater — Boulder Public Library', addressNumber:'1001', street:'Arapahoe', address:'1001 Arapahoe Ave', uses:'Talks + programming' }
-  ];
+  let db;
+  let state = {
+    version: 3,
+    clients: [],
+    services: [],
+    entries: [],
+    invoices: [],
+    settings: defaultSettings()
+  };
 
-  const STATUS_VALUES = ['Upcoming','Active','Closed'];
+  let ui = {
+    view: 'time',
+    selectedDate: todayISO(),
+    selectedClientId: '',
+    clientDetailId: '',
+    exportClientId: 'all',
+    exportStart: firstOfMonthISO(),
+    exportEnd: todayISO(),
+    exportStatus: 'all',
+    storagePersistent: null
+  };
 
-  let state = migrateState(loadState());
-  let map;
-  let permitCluster;
-  let venueLayer;
-  let venueBuildingLayer;
-  let venueContextLayer;
-  let corridorLayer;
-  let corridorPreviewLayer;
-  let corridorEndpointLayer;
-  let coneZonesLayer;
-  let coneZonesLoaded = false;
-  let coneZonesLoading = null;
-  let coneZonesFeatureCount = 0;
-  let currentPermitId = null;
-  let currentCorridorId = null;
-  let pendingCorridor = null;
-  let mapMovePermitId = null;
-  let manualPlacePermitId = null;
-  let folderHandle = null;
-  let renderScheduled = false;
-  let toastTimer = null;
-  let activeDrawHandler = null;
-  let corridorMode = null; // select-street | select-section | draw-custom
-  let selectedStreet = null;
-  let sectionStart = null;
-  let corridorRequestToken = 0;
-  const corridorRuntime = new Map();
-  const venueRuntime = new Map();
-  const addressLookupCache = new Map();
-  const els = {};
-
-  document.addEventListener('DOMContentLoaded', init);
-
-  async function init() {
-    cacheElements();
-    initMap();
-    initStatusFilters();
-    bindUI();
-    // Corridor controls are modal/contextual; never leave the map banner visible at rest.
-    exitCorridorMapMode(false);
-    saveState(); // save any migration immediately
-
-    if (!state.initialized) {
-      state.initialized = true;
-      saveState();
-      toast('Ready. Connect a permit folder or drop permit files onto the map. Only filenames are used.');
-    }
-
-    folderHandle = await idbGet('permitFolder');
-    updateFolderButton();
-    rebuildCorridors();
-    await resolveVenues();
-    await locateUnlocatedPermits({ quiet:true });
-    renderAll();
+  function id() {
+    return globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function cacheElements() {
-    [
-      'visibleCount','totalCount','unlocatedCount','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
-      'dataMenuBtn','dataMenu','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','fitAllBtn',
-      'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','dateFrom','dateTo',
-      'festivalWindowBtn','clearDatesBtn','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
-      'resetFiltersBtn','showUnlocatedBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
-      'mapKeyToggle','mapKeyBody','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
-      'deletePermitBtn','streetScopeDialog','streetScopeForm','selectedStreetName','wholeStreetBtn','streetSectionBtn','corridorDialog','corridorForm',
-      'unlocatedDialog','closeUnlocatedBtn','unlocatedList'
-    ].forEach(id => els[id] = document.getElementById(id));
+  function todayISO() {
+    const d = new Date();
+    return localISO(d);
   }
 
-  function initMap() {
-    map = L.map('map', { zoomControl:true, preferCanvas:true }).setView(BOULDER_CENTER, 13);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom:19,
-      attribution:'&copy; OpenStreetMap contributors'
-    }).addTo(map);
-
-    permitCluster = L.markerClusterGroup({ disableClusteringAtZoom:17, showCoverageOnHover:false, maxClusterRadius:44 });
-    venueLayer = L.layerGroup().addTo(map);
-    venueBuildingLayer = L.layerGroup().addTo(map);
-    venueContextLayer = L.layerGroup();
-    corridorLayer = L.layerGroup().addTo(map);
-    corridorPreviewLayer = L.layerGroup().addTo(map);
-    corridorEndpointLayer = L.layerGroup().addTo(map);
-    coneZonesLayer = L.featureGroup();
-    permitCluster.addTo(map);
-
-    map.on(L.Draw.Event.CREATED, e => {
-      if (corridorMode !== 'draw-custom' || e.layerType !== 'polyline') return;
-      const path = e.layer.getLatLngs().map(ll => [ll.lat, ll.lng]);
-      activeDrawHandler = null;
-      if (path.length < 2) return cancelCorridorMode();
-      pendingCorridor = { sourceType:'custom', scope:'Custom route', streetLabel:'', paths:[path] };
-      exitCorridorMapMode(false);
-      prepareCorridorForm({ suggestedName:'Custom corridor' });
-    });
-
-    map.on('click', async e => {
-      if (mapMovePermitId || manualPlacePermitId) {
-        const id = mapMovePermitId || manualPlacePermitId;
-        const permit = state.permits.find(p => p.id === id);
-        if (!permit) return;
-        permit.lat = e.latlng.lat;
-        permit.lng = e.latlng.lng;
-        permit.matchMethod = 'manual';
-        permit.matchedFullAddr = 'Manual map placement';
-        permit.updatedAt = new Date().toISOString();
-        mapMovePermitId = null;
-        manualPlacePermitId = null;
-        saveState();
-        renderAll();
-        toast('Pin location saved manually.');
-        return;
-      }
-
-      if (corridorMode === 'select-street') {
-        await selectStreetAt(e.latlng);
-        return;
-      }
-
-      if (corridorMode === 'select-section') {
-        chooseSectionPoint(e.latlng);
-      }
-    });
+  function firstOfMonthISO() {
+    const d = new Date();
+    d.setDate(1);
+    return localISO(d);
   }
 
-  function initStatusFilters() {
-    els.statusFilters.innerHTML = STATUS_VALUES.map(s => `<label class="status-chip"><input type="checkbox" data-status="${escapeHtml(s)}" checked><span>${escapeHtml(s)}</span></label>`).join('');
+  function localISO(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   }
 
-  function bindUI() {
-    els.connectFolderBtn.addEventListener('click', connectOrSyncFolder);
-    els.filePicker.addEventListener('change', async e => {
-      const names = [...e.target.files].filter(f => f.name.toLowerCase().endsWith('.pdf')).map(f => ({ name:f.name, relativePath:f.webkitRelativePath || f.name }));
-      await importNames(names);
-      e.target.value = '';
-    });
-
-    els.dataMenuBtn.addEventListener('click', () => toggleDataMenu());
-    document.addEventListener('click', e => {
-      if (!e.target.closest('.menu-wrap')) toggleDataMenu(false);
-    });
-    els.exportBtn.addEventListener('click', () => { toggleDataMenu(false); exportBackup(); });
-    els.importBackup.addEventListener('change', e => { toggleDataMenu(false); importBackup(e); });
-    els.exportCsvBtn.addEventListener('click', () => { toggleDataMenu(false); exportCsv(); });
-    els.clearAllBtn.addEventListener('click', () => { toggleDataMenu(false); clearAllData(); });
-
-    els.fitAllBtn.addEventListener('click', fitAll);
-    els.addCorridorBtn.addEventListener('click', () => { els.corridorActions.hidden = !els.corridorActions.hidden; });
-    els.selectStreetCorridorBtn.addEventListener('click', startStreetCorridorMode);
-    els.drawCorridorBtn.addEventListener('click', startCustomCorridorMode);
-    els.cancelCorridorModeBtn.addEventListener('click', cancelCorridorMode);
-    els.wholeStreetBtn.addEventListener('click', chooseWholeStreet);
-    els.streetSectionBtn.addEventListener('click', startStreetSectionMode);
-    els.streetScopeDialog.addEventListener('close', () => {
-      if (els.streetScopeDialog.returnValue === 'cancel' && selectedStreet && !pendingCorridor) cancelCorridorMode();
-    });
-    els.corridorDialog.addEventListener('close', () => {
-      if (els.corridorDialog.returnValue === 'cancel') {
-        pendingCorridor = null;
-        currentCorridorId = null;
-        clearCorridorPreview();
-      }
-    });
-    els.corridorForm.addEventListener('submit', saveCorridorForm);
-
-    ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
-    els.layerConeZones.addEventListener('change', async () => {
-      updateLayerVisibility();
-      if (els.layerConeZones.checked) await ensureConeZonesLoaded();
-    });
-    ['searchFilter','dateFrom','dateTo','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter']
-      .forEach(id => els[id].addEventListener('input', scheduleRender));
-    els.statusFilters.addEventListener('change', scheduleRender);
-    els.resetFiltersBtn.addEventListener('click', resetFilters);
-    els.festivalWindowBtn.addEventListener('click', () => { els.dateFrom.value=FESTIVAL_START; els.dateTo.value=FESTIVAL_END; renderAll(); });
-    els.clearDatesBtn.addEventListener('click', () => { els.dateFrom.value=''; els.dateTo.value=''; renderAll(); });
-
-    els.permitForm.addEventListener('submit', savePermitForm);
-    els.movePinBtn.addEventListener('click', startMoveCurrentPermit);
-    els.retryLocateBtn.addEventListener('click', retryCurrentPermitLocation);
-    els.archivePermitBtn.addEventListener('click', archiveCurrentPermit);
-    els.deletePermitBtn.addEventListener('click', deleteCurrentPermit);
-
-    els.showUnlocatedBtn.addEventListener('click', showUnlocated);
-    els.closeUnlocatedBtn.addEventListener('click', () => els.unlocatedDialog.close());
-    els.mapKeyToggle.addEventListener('click', () => {
-      const show = els.mapKeyBody.hidden;
-      els.mapKeyBody.hidden = !show;
-      els.mapKeyToggle.setAttribute('aria-expanded', String(show));
-    });
-
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && corridorMode) {
-        e.preventDefault();
-        cancelCorridorMode();
-      }
-    }, true);
-
-    window.addEventListener('dragenter', e => { e.preventDefault(); els.dropZone.classList.add('visible'); });
-    window.addEventListener('dragover', e => { e.preventDefault(); els.dropZone.classList.add('visible'); });
-    window.addEventListener('dragleave', e => { if (e.target === document.documentElement || e.target === document.body) els.dropZone.classList.remove('visible'); });
-    window.addEventListener('drop', handleDrop);
+  function esc(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
   }
 
-  function toggleDataMenu(force) {
-    const show = typeof force === 'boolean' ? force : els.dataMenu.hidden;
-    els.dataMenu.hidden = !show;
-    els.dataMenuBtn.setAttribute('aria-expanded', String(show));
+  function defaultSettings() {
+    return {
+      businessName: '',
+      businessEmail: '',
+      businessPhone: '',
+      businessAddress: '',
+      currency: 'USD',
+      defaultTaxRate: 0,
+      defaultMileageRate: 0,
+      invoicePrefix: 'INV',
+      nextInvoiceNumber: 1
+    };
   }
 
-  async function handleDrop(e) {
-    e.preventDefault();
-    els.dropZone.classList.remove('visible');
-    const names = [];
-    const items = [...(e.dataTransfer?.items || [])];
-    if (items.length && items[0].webkitGetAsEntry) {
-      for (const item of items) {
-        const entry = item.webkitGetAsEntry?.();
-        if (entry) await collectEntryNames(entry, '', names);
-      }
-    } else {
-      for (const f of [...(e.dataTransfer?.files || [])]) if (f.name.toLowerCase().endsWith('.pdf')) names.push({ name:f.name, relativePath:f.webkitRelativePath || f.name });
-    }
-    await importNames(names);
+  function currencyCode() {
+    return state?.settings?.currency || 'USD';
   }
 
-  async function collectEntryNames(entry, parentPath, out) {
-    const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-    if (entry.isFile) {
-      if (entry.name.toLowerCase().endsWith('.pdf')) out.push({ name:entry.name, relativePath:path });
-      return;
-    }
-    if (entry.isDirectory) {
-      const reader = entry.createReader();
-      let batch;
-      do {
-        batch = await new Promise((resolve,reject) => reader.readEntries(resolve,reject));
-        for (const child of batch) await collectEntryNames(child, path, out);
-      } while (batch.length);
-    }
-  }
-
-  async function connectOrSyncFolder() {
+  function moneyIn(n, currency = currencyCode()) {
     try {
-      if (!('showDirectoryPicker' in window)) {
-        toast('This browser does not support folder connection. Use Import filenames or drag-and-drop instead.');
-        return;
-      }
-      if (!folderHandle) {
-        folderHandle = await window.showDirectoryPicker({ mode:'read' });
-        await idbSet('permitFolder', folderHandle);
-      } else if (!(await verifyPermission(folderHandle))) {
-        folderHandle = await window.showDirectoryPicker({ mode:'read' });
-        await idbSet('permitFolder', folderHandle);
-      }
-      updateFolderButton();
-      const names = [];
-      await scanDirectoryHandle(folderHandle, '', names);
-      await importNames(names);
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(n || 0));
+    } catch (_) {
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(n || 0));
+    }
+  }
+
+  function money(n) {
+    return moneyIn(n);
+  }
+
+  function hours(n) {
+    const val = Number(n || 0);
+    return Number.isInteger(val) ? `${val}` : val.toFixed(2).replace(/0$/, '');
+  }
+
+  function formatDate(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+      .format(new Date(y, m - 1, d));
+  }
+
+  function shortDate(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(y, m - 1, d));
+  }
+
+  function displayTime(t) {
+    if (!t) return '';
+    const [hh, mm] = t.split(':').map(Number);
+    const d = new Date(2000, 0, 1, hh, mm);
+    return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(d);
+  }
+
+  function timeToMinutes(t) {
+    const [h, m] = String(t || '00:00').split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  function isOvernight(start, end) {
+    return Boolean(start && end && timeToMinutes(end) < timeToMinutes(start));
+  }
+
+  function durationHours(start, end) {
+    const a = timeToMinutes(start);
+    let b = timeToMinutes(end);
+    if (b < a) b += 1440;
+    return (b - a) / 60;
+  }
+
+  function addMinutesToTime(t, minutes) {
+    const total = (timeToMinutes(t) + minutes) % 1440;
+    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  }
+
+  function dateDayNumber(iso) {
+    const [y, m, d] = String(iso || '').split('-').map(Number);
+    return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+  }
+
+  function shiftInterval(date, start, end) {
+    const day = dateDayNumber(date) * 1440;
+    const startMinute = timeToMinutes(start);
+    let endMinute = timeToMinutes(end);
+    if (endMinute < startMinute) endMinute += 1440;
+    return { start: day + startMinute, end: day + endMinute };
+  }
+
+  function overlaps(aDate, aStart, aEnd, bDate, bStart, bEnd) {
+    const a = shiftInterval(aDate, aStart, aEnd);
+    const b = shiftInterval(bDate, bStart, bEnd);
+    return Math.max(a.start, b.start) < Math.min(a.end, b.end);
+  }
+
+  function shiftEndDate(date, start, end) {
+    return isOvernight(start, end) ? addDaysISO(date, 1) : date;
+  }
+
+  function shiftTimeLabel(date, start, end, withDate = false) {
+    const overnight = isOvernight(start, end);
+    if (!withDate) return `${displayTime(start)} – ${displayTime(end)}${overnight ? ' · next day' : ''}`;
+    const endDate = shiftEndDate(date, start, end);
+    return overnight
+      ? `${shortDate(date)} ${displayTime(start)} – ${shortDate(endDate)} ${displayTime(end)}`
+      : `${shortDate(date)} ${displayTime(start)} – ${displayTime(end)}`;
+  }
+
+  async function openDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function dbGet(key) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly');
+      const request = tx.objectStore(STORE).get(key);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function dbSet(key, value) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function persist() {
+    try {
+      await dbSet(STATE_KEY, state);
     } catch (err) {
-      if (err?.name !== 'AbortError') toast(`Folder scan failed: ${err.message || err}`);
+      alert('Invox could not save this change to the device. Your current screen has not been cleared; please keep the app open and make a backup if possible.');
+      throw err;
     }
   }
 
-  async function scanDirectoryHandle(handle, parentPath, out) {
-    for await (const [name, child] of handle.entries()) {
-      const path = parentPath ? `${parentPath}/${name}` : name;
-      if (child.kind === 'directory') await scanDirectoryHandle(child, path, out);
-      else if (name.toLowerCase().endsWith('.pdf')) out.push({ name, relativePath:path }); // filename only; never child.getFile()
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toastEl.classList.remove('show'), 1800);
+  }
+
+  function getClient(clientId) {
+    return state.clients.find(c => c.id === clientId);
+  }
+
+  function getService(serviceId) {
+    return state.services.find(s => s.id === serviceId);
+  }
+
+  function sortEntries(list) {
+    return [...list].sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`));
+  }
+
+  function calcMileage(entry) {
+    const mode = ['manual','odometer'].includes(entry?.mileageMode) ? entry.mileageMode : 'none';
+    const rate = Math.max(0, Number(entry?.mileageRate || 0));
+    let miles = 0;
+    if (mode === 'manual') {
+      miles = Math.max(0, Number(entry?.mileageMiles || 0));
+    } else if (mode === 'odometer') {
+      const start = Number(entry?.mileageStart);
+      const end = Number(entry?.mileageEnd);
+      if (Number.isFinite(start) && Number.isFinite(end) && end >= start) miles = end - start;
     }
+    return { mode, miles, rate, amount: miles * rate };
   }
 
-  async function verifyPermission(handle) {
-    const opts = { mode:'read' };
-    if ((await handle.queryPermission(opts)) === 'granted') return true;
-    return (await handle.requestPermission(opts)) === 'granted';
+  function calcEntry(entry) {
+    const hrs = durationHours(entry.start, entry.end);
+    const billingType = entry.billingType || 'hourly';
+    const serviceAmount = billingType === 'fixed' ? Number(entry.rate || 0) : hrs * Number(entry.rate || 0);
+    const mileage = calcMileage(entry);
+    const amount = serviceAmount + mileage.amount;
+    return { hrs, amount, serviceAmount, billingType, mileage };
   }
 
-  function updateFolderButton() {
-    els.connectFolderBtn.textContent = folderHandle ? 'Sync permit folder' : 'Connect permit folder';
+  function statusLabel(status) {
+    return status === 'paid' ? 'Paid' : status === 'invoiced' ? 'Invoiced' : 'Unbilled';
   }
 
-  async function importNames(entries, opts={}) {
-    if (!entries.length) {
-      if (!opts.silent) toast('No PDF filenames found.');
+  function normalizeState(raw) {
+    const base = raw && typeof raw === 'object' ? raw : {};
+    const settings = { ...defaultSettings(), ...(base.settings || {}) };
+    settings.defaultTaxRate = Number.isFinite(Number(settings.defaultTaxRate)) ? Number(settings.defaultTaxRate) : 0;
+    settings.defaultMileageRate = Number.isFinite(Number(settings.defaultMileageRate)) && Number(settings.defaultMileageRate) >= 0 ? Number(settings.defaultMileageRate) : 0;
+    settings.nextInvoiceNumber = Math.max(1, parseInt(settings.nextInvoiceNumber || 1, 10) || 1);
+
+    const clients = Array.isArray(base.clients) ? base.clients.map(c => ({
+      ...c,
+      email: c.email || '',
+      billingAddress: c.billingAddress || ''
+    })) : [];
+
+    const services = Array.isArray(base.services) ? base.services.map(s => ({
+      ...s,
+      billingType: s.billingType === 'fixed' ? 'fixed' : 'hourly'
+    })) : [];
+
+    const entries = Array.isArray(base.entries) ? base.entries.map(e => ({
+      ...e,
+      billingType: e.billingType === 'fixed' ? 'fixed' : 'hourly',
+      status: ['unbilled','invoiced','paid'].includes(e.status) ? e.status : 'unbilled',
+      mileageMode: ['manual','odometer'].includes(e.mileageMode) ? e.mileageMode : 'none',
+      mileageStart: Number.isFinite(Number(e.mileageStart)) ? Number(e.mileageStart) : null,
+      mileageEnd: Number.isFinite(Number(e.mileageEnd)) ? Number(e.mileageEnd) : null,
+      mileageMiles: Number.isFinite(Number(e.mileageMiles)) ? Math.max(0, Number(e.mileageMiles)) : 0,
+      mileageRate: Number.isFinite(Number(e.mileageRate)) ? Math.max(0, Number(e.mileageRate)) : 0
+    })) : [];
+
+    const invoices = Array.isArray(base.invoices) ? base.invoices.map(inv => ({
+      ...inv,
+      status: inv.status === 'paid' ? 'paid' : 'issued',
+      currency: inv.currency || settings.currency || 'USD',
+      lines: Array.isArray(inv.lines) ? inv.lines : [],
+      entryIds: Array.isArray(inv.entryIds) ? inv.entryIds : []
+    })) : [];
+
+    return { version: 3, clients, services, entries, invoices, settings };
+  }
+
+  function totals(list) {
+    return list.reduce((acc, e) => {
+      const x = calcEntry(e);
+      acc.hours += x.hrs;
+      acc.serviceAmount += x.serviceAmount;
+      acc.mileageMiles += x.mileage.miles;
+      acc.mileageAmount += x.mileage.amount;
+      acc.amount += x.amount;
+      return acc;
+    }, { hours: 0, serviceAmount: 0, mileageMiles: 0, mileageAmount: 0, amount: 0 });
+  }
+
+  function setView(view) {
+    ui.view = view;
+    ui.clientDetailId = view === 'clients' ? ui.clientDetailId : '';
+    navButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+    render();
+  }
+
+  function render() {
+    titleEl.textContent = ui.view === 'time' ? 'Time' : ui.view === 'clients' ? 'Clients' : ui.view === 'rates' ? 'Rates' : 'Billing';
+    headerAction.style.display = ui.view === 'export' ? 'none' : 'grid';
+    headerAction.setAttribute('aria-label', ui.view === 'time' ? 'Add work block' : ui.view === 'clients' ? 'Add client' : 'Add rate');
+
+    if (ui.view === 'time') renderTime();
+    if (ui.view === 'clients') renderClients();
+    if (ui.view === 'rates') renderRates();
+    if (ui.view === 'export') renderExport();
+  }
+
+  function renderTime() {
+    if (!ui.selectedClientId && state.clients.length) ui.selectedClientId = state.clients[0].id;
+    if (ui.selectedClientId && !getClient(ui.selectedClientId)) ui.selectedClientId = state.clients[0]?.id || '';
+
+    const clientOptions = state.clients.map(c => `<option value="${esc(c.id)}" ${c.id === ui.selectedClientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const dayEntries = sortEntries(state.entries.filter(e => e.clientId === ui.selectedClientId && e.date === ui.selectedDate));
+    const dayTotals = totals(dayEntries);
+
+    appEl.innerHTML = `
+      <section class="section">
+        <div class="card pad">
+          <div class="control-grid">
+            <div class="field">
+              <label for="timeClient">Client</label>
+              <select id="timeClient" ${state.clients.length ? '' : 'disabled'}>
+                ${state.clients.length ? clientOptions : '<option>No clients yet</option>'}
+              </select>
+            </div>
+            <div class="field">
+              <label for="timeDate">Shift start date</label>
+              <input id="timeDate" type="date" value="${esc(ui.selectedDate)}" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      ${state.clients.length ? `
+        <section class="metrics" aria-label="Day totals">
+          <div class="metric"><div class="metric-label">Total hours</div><div class="metric-value">${hours(dayTotals.hours)}</div></div>
+          <div class="metric secondary"><div class="metric-label">Day total</div><div class="metric-value">${money(dayTotals.amount)}</div></div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <div>
+              <div class="section-title">Work blocks</div>
+              <div class="section-subtitle">${esc(formatDate(ui.selectedDate))}</div>
+            </div>
+            <button class="btn primary small" id="addBlockInline" type="button">+ Add block</button>
+          </div>
+          <div class="entry-list">
+            ${dayEntries.length ? dayEntries.map(entryCard).join('') : `
+              <div class="card empty"><strong>No work logged</strong>Add the first block for this client and date.</div>
+            `}
+          </div>
+        </section>
+      ` : `
+        <section class="section">
+          <div class="card empty">
+            <strong>Add a client to begin</strong>
+            Work blocks are saved under a client and work date.
+            <div style="margin-top:14px"><button class="btn primary" id="firstClient" type="button">Add client</button></div>
+          </div>
+        </section>
+      `}
+    `;
+
+    const clientSelect = document.getElementById('timeClient');
+    if (clientSelect) clientSelect.onchange = e => { ui.selectedClientId = e.target.value; renderTime(); };
+    document.getElementById('timeDate').onchange = e => { ui.selectedDate = e.target.value || todayISO(); renderTime(); };
+    document.getElementById('addBlockInline')?.addEventListener('click', () => openBlockModal());
+    document.getElementById('firstClient')?.addEventListener('click', () => openClientModal());
+    bindEntryActions();
+  }
+
+  function entryCard(e) {
+    const { hrs, amount, billingType, mileage } = calcEntry(e);
+    const notes = e.notes ? `<div class="entry-notes">${esc(e.notes)}</div>` : '';
+    const rateText = billingType === 'fixed' ? `${money(e.rate)} fixed` : `${money(e.rate)}/hr`;
+    const billingText = billingType === 'fixed' ? `Fixed · ${hours(hrs)} hrs tracked` : `${hours(hrs)} hrs`;
+    const mileageText = mileage.miles > 0 ? `<span class="dot mileage-meta">${hours(mileage.miles)} mi · ${money(mileage.amount)} mileage</span>` : '';
+    const statusClass = e.status === 'paid' ? 'paid' : e.status === 'invoiced' ? 'invoiced' : 'unbilled';
+    return `
+      <article class="card entry-card" data-entry="${esc(e.id)}">
+        <div class="entry-head">
+          <div>
+            <div class="entry-time">${esc(displayTime(e.start))} – ${esc(displayTime(e.end))}${isOvernight(e.start, e.end) ? '<span class="overnight-label">next day</span>' : ''}</div>
+            <div class="entry-meta">
+              <span class="pill accent">${esc(e.serviceName || 'Custom')}</span>
+              <span>${billingText}</span>
+              <span class="dot">${rateText}</span>
+              ${mileageText}
+              <span class="pill status-pill ${statusClass}">${statusLabel(e.status)}</span>
+            </div>
+          </div>
+          <div class="entry-amount">${money(amount)}</div>
+        </div>
+        ${notes}
+        <div class="entry-actions">
+          <button class="btn outline small edit-entry" data-id="${esc(e.id)}" type="button">Edit</button>
+          <button class="btn secondary small delete-entry" data-id="${esc(e.id)}" type="button">Delete</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function bindEntryActions() {
+    document.querySelectorAll('.edit-entry').forEach(btn => btn.addEventListener('click', () => openBlockModal(btn.dataset.id)));
+    document.querySelectorAll('.delete-entry').forEach(btn => btn.addEventListener('click', async () => {
+      const entry = state.entries.find(e => e.id === btn.dataset.id);
+      if (!entry) return;
+      if (!confirm(`Delete the ${shiftTimeLabel(entry.date, entry.start, entry.end, true)} block?`)) return;
+      state.entries = state.entries.filter(e => e.id !== entry.id);
+      await persist();
+      toast('Work block deleted');
+      render();
+    }));
+  }
+
+  function renderClients() {
+    if (ui.clientDetailId) {
+      renderClientDetail(ui.clientDetailId);
       return;
     }
-    let added=0, known=0, invalid=0;
-    for (const entry of entries) {
-      const parsed = parsePermitFilename(entry.name);
-      if (!parsed) { invalid++; continue; }
-      const existing = state.permits.find(p => p.sourceFilename === entry.name);
+
+    const rows = state.clients.map(client => {
+      const list = state.entries.filter(e => e.clientId === client.id);
+      const t = totals(list);
+      const last = sortEntries(list).at(-1);
+      return `
+        <button class="list-row client-open list-row-button" data-id="${esc(client.id)}" type="button">
+          <div class="row-main">
+            <div class="row-title">${esc(client.name)}</div>
+            <div class="row-sub">${last ? `Last logged ${esc(shortDate(last.date))}` : 'No time logged yet'}</div>
+          </div>
+          <div class="row-value">${hours(t.hours)} hrs<small>${money(t.amount)}</small></div>
+        </button>
+      `;
+    }).join('');
+
+    appEl.innerHTML = `
+      <section class="section">
+        <div class="section-header">
+          <div><div class="section-title">Client records</div><div class="section-subtitle">Work history and totals</div></div>
+        </div>
+        <div class="card">
+          ${rows || `<div class="empty"><strong>No clients yet</strong>Add a client to start keeping time.</div>`}
+        </div>
+      </section>
+    `;
+
+    document.querySelectorAll('.client-open').forEach(btn => btn.addEventListener('click', () => {
+      ui.clientDetailId = btn.dataset.id;
+      renderClients();
+    }));
+  }
+
+  function renderClientDetail(clientId) {
+    const client = getClient(clientId);
+    if (!client) { ui.clientDetailId = ''; renderClients(); return; }
+    const list = sortEntries(state.entries.filter(e => e.clientId === clientId));
+    const t = totals(list);
+    const grouped = {};
+    list.forEach(e => (grouped[e.date] ||= []).push(e));
+    const days = Object.keys(grouped).sort().reverse();
+
+    appEl.innerHTML = `
+      <section class="section">
+        <button class="btn outline small" id="backClients" type="button">← All clients</button>
+      </section>
+      <section class="section">
+        <div class="card pad">
+          <div class="entry-head">
+            <div>
+              <div style="font-size:22px;font-weight:850">${esc(client.name)}</div>
+              ${(client.email || client.billingAddress) ? `<div class="client-contact">${client.email ? `<div>${esc(client.email)}</div>` : ''}${client.billingAddress ? `<div>${esc(client.billingAddress).replaceAll('\n','<br>')}</div>` : ''}</div>` : ''}
+              ${client.details ? `<div class="client-notes">${esc(client.details)}</div>` : ''}
+            </div>
+            <button class="btn secondary small" id="editClient" type="button">Edit</button>
+          </div>
+        </div>
+      </section>
+      <section class="metrics">
+        <div class="metric"><div class="metric-label">All hours</div><div class="metric-value">${hours(t.hours)}</div></div>
+        <div class="metric secondary"><div class="metric-label">All work</div><div class="metric-value">${money(t.amount)}</div></div>
+      </section>
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">History</div><div class="section-subtitle">${list.length} work ${list.length === 1 ? 'block' : 'blocks'}</div></div></div>
+        ${days.length ? days.map(date => {
+          const day = grouped[date];
+          const dt = totals(day);
+          return `<div class="day-group">
+            <div class="day-head"><div class="day-date">${esc(formatDate(date))}</div><div class="day-total">${hours(dt.hours)} hrs · ${money(dt.amount)}</div></div>
+            <div class="entry-list">${day.map(entryCard).join('')}</div>
+          </div>`;
+        }).join('') : `<div class="card empty"><strong>No work logged</strong>This client's work history will appear here.</div>`}
+      </section>
+    `;
+
+    document.getElementById('backClients').onclick = () => { ui.clientDetailId = ''; renderClients(); };
+    document.getElementById('editClient').onclick = () => openClientModal(client.id);
+    bindEntryActions();
+  }
+
+  function renderRates() {
+    const rows = [...state.services].sort((a,b) => a.name.localeCompare(b.name)).map(s => {
+      const fixed = (s.billingType || 'hourly') === 'fixed';
+      return `
+        <div class="list-row rate-row">
+          <div class="row-main"><div class="row-title">${esc(s.name)}</div><div class="row-sub">${fixed ? 'Default fixed amount' : 'Default hourly rate'}</div></div>
+          <div class="row-value rate-value">${money(s.rate)}<small>${fixed ? 'per block' : 'per hour'}</small></div>
+          <button class="btn outline small edit-service" data-id="${esc(s.id)}" type="button">Edit</button>
+        </div>
+      `;
+    }).join('');
+
+    appEl.innerHTML = `
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Services & rates</div><div class="section-subtitle">Hourly or fixed-price defaults; any block can still be overridden</div></div></div>
+        <div class="card">
+          ${rows || `<div class="empty"><strong>No rates set</strong>Add the services or work types you bill for.</div>`}
+        </div>
+      </section>
+      <section class="section">
+        <div class="note">Changing a default only affects new work blocks. Existing logs retain the billing method and amount that were saved at the time.</div>
+      </section>
+    `;
+    document.querySelectorAll('.edit-service').forEach(btn => btn.addEventListener('click', () => openServiceModal(btn.dataset.id)));
+  }
+
+  function renderExport() {
+    const clientOptions = state.clients.map(c => `<option value="${esc(c.id)}" ${ui.exportClientId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const invalidRange = !ui.exportStart || !ui.exportEnd || ui.exportStart > ui.exportEnd;
+    const filtered = invalidRange ? [] : exportEntries();
+    const t = totals(filtered);
+    const invoiceCandidates = invalidRange ? [] : invoiceCandidateEntries();
+    const invoiceTotals = totals(invoiceCandidates);
+    const selectedClient = ui.exportClientId === 'all' ? null : getClient(ui.exportClientId);
+    const businessReady = Boolean(String(state.settings.businessName || '').trim());
+    const invoiceRows = [...state.invoices].sort((a,b) => `${b.issueDate || ''}|${b.createdAt || ''}`.localeCompare(`${a.issueDate || ''}|${a.createdAt || ''}`)).map(inv => {
+      const client = getClient(inv.clientId);
+      const statusClass = inv.status === 'paid' ? 'paid' : 'invoiced';
+      return `
+        <div class="invoice-row">
+          <div class="row-main">
+            <div class="row-title">${esc(inv.number || 'Invoice')}</div>
+            <div class="row-sub">${esc(client?.name || inv.clientSnapshot?.name || 'Client')} · ${esc(shortDate(inv.issueDate))} · due ${esc(shortDate(inv.dueDate))}</div>
+          </div>
+          <div class="invoice-row-right">
+            <div class="row-value">${moneyIn(inv.total, inv.currency)}<small><span class="pill status-pill ${statusClass}">${inv.status === 'paid' ? 'Paid' : 'Issued'}</span></small></div>
+            <button class="btn outline small print-invoice" data-id="${esc(inv.id)}" type="button">View / PDF</button>
+            ${inv.status !== 'paid' ? `<button class="btn secondary small pay-invoice" data-id="${esc(inv.id)}" type="button">Mark paid</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    appEl.innerHTML = `
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Billing period</div><div class="section-subtitle">Filter work for Excel export or invoicing</div></div></div>
+        <div class="card pad">
+          <div class="control-grid">
+            <div class="field full">
+              <label for="exportClient">Client</label>
+              <select id="exportClient">
+                <option value="all" ${ui.exportClientId === 'all' ? 'selected' : ''}>All clients</option>
+                ${clientOptions}
+              </select>
+            </div>
+            <div class="field">
+              <label for="exportStart">Start date</label>
+              <input id="exportStart" type="date" value="${esc(ui.exportStart)}" />
+            </div>
+            <div class="field">
+              <label for="exportEnd">End date</label>
+              <input id="exportEnd" type="date" value="${esc(ui.exportEnd)}" />
+            </div>
+            <div class="field full">
+              <label for="exportStatus">Billing status</label>
+              <select id="exportStatus">
+                <option value="all" ${ui.exportStatus === 'all' ? 'selected' : ''}>All statuses</option>
+                <option value="unbilled" ${ui.exportStatus === 'unbilled' ? 'selected' : ''}>Unbilled</option>
+                <option value="invoiced" ${ui.exportStatus === 'invoiced' ? 'selected' : ''}>Invoiced</option>
+                <option value="paid" ${ui.exportStatus === 'paid' ? 'selected' : ''}>Paid</option>
+              </select>
+            </div>
+          </div>
+          ${invalidRange ? '<div class="warning" style="margin-top:12px">The start date must be on or before the end date.</div>' : `<div class="preview-bar"><span>${filtered.length} blocks · ${hours(t.hours)} hrs${t.mileageMiles ? ` · ${hours(t.mileageMiles)} mi` : ''}</span><strong>${money(t.amount)}</strong></div>`}
+          <div style="margin-top:12px"><button class="btn primary full" id="xlsxExport" type="button" ${(!invalidRange && filtered.length) ? '' : 'disabled'}>Export Excel (.xlsx)</button></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Invoice</div><div class="section-subtitle">Turn unbilled work into a client invoice</div></div></div>
+        <div class="card pad">
+          ${!selectedClient ? `
+            <div class="empty compact"><strong>Choose one client above</strong>Invoices are created for one client at a time.</div>
+          ` : !businessReady ? `
+            <div class="empty compact"><strong>Set your business details first</strong>Your name or business identity is required on generated invoices.<div style="margin-top:12px"><button class="btn primary" id="invoiceSetup" type="button">Set business details</button></div></div>
+          ` : invoiceCandidates.length ? `
+            <div class="preview-bar"><span>${invoiceCandidates.length} unbilled blocks · ${hours(invoiceTotals.hours)} hrs${invoiceTotals.mileageMiles ? ` · ${hours(invoiceTotals.mileageMiles)} mi` : ''}</span><strong>${money(invoiceTotals.amount)}</strong></div>
+            <div class="note" style="margin-top:10px">Creating an invoice snapshots these blocks and marks them Invoiced. The work logs remain editable, while the saved invoice keeps its original totals.</div>
+            <div style="margin-top:12px"><button class="btn primary full" id="createInvoice" type="button">Create invoice for ${esc(selectedClient.name)}</button></div>
+          ` : `
+            <div class="empty compact"><strong>No unbilled work in this period</strong>Change the date range or log new work for ${esc(selectedClient.name)}.</div>
+          `}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Invoice history</div><div class="section-subtitle">Saved invoices can be reopened or marked paid</div></div></div>
+        <div class="card">
+          ${invoiceRows || `<div class="empty"><strong>No invoices yet</strong>Your created invoices will appear here.</div>`}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Business settings</div><div class="section-subtitle">Identity, currency, tax, and invoice numbering</div></div></div>
+        <div class="card pad settings-summary">
+          <div><strong>${esc(state.settings.businessName || 'Business details not set')}</strong><div class="row-sub">${esc(currencyCode())} · ${Number(state.settings.defaultTaxRate || 0).toFixed(2).replace(/\.00$/,'')}% default tax · ${money(Number(state.settings.defaultMileageRate || 0))}/mi · ${esc(state.settings.invoicePrefix || 'INV')}-${String(state.settings.nextInvoiceNumber || 1).padStart(4,'0')}</div></div>
+          <button class="btn outline small" id="businessSettings" type="button">Edit</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><div><div class="section-title">Data backup</div><div class="section-subtitle">Protect the local records stored on this device</div></div></div>
+        <div class="card pad">
+          <div class="success">Closing Invox does not erase records. A backup protects against device loss, replacement, or cleared browser/app data.</div>
+          <div class="control-grid" style="margin-top:12px">
+            <button class="btn outline" id="backupBtn" type="button">Save backup</button>
+            <button class="btn secondary" id="restoreBtn" type="button">Restore backup</button>
+          </div>
+          <input type="file" id="restoreFile" accept="application/json,.json" hidden />
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="warning"><strong>Stored on this device:</strong> client information, notes, rates, work logs, and invoices stay in this device's local Invox database. Static web hosting only serves the app files.</div>
+        <div class="status-line"><span class="status-dot ${ui.storagePersistent === true ? 'ok' : ui.storagePersistent === false ? 'warn' : ''}"></span><span>Storage protection: ${ui.storagePersistent === true ? 'persistent mode granted' : ui.storagePersistent === false ? 'best-effort mode — keep backups' : 'checking device support'}.</span></div>
+      </section>
+    `;
+
+    document.getElementById('exportClient').onchange = e => { ui.exportClientId = e.target.value; renderExport(); };
+    document.getElementById('exportStart').onchange = e => { ui.exportStart = e.target.value || firstOfMonthISO(); renderExport(); };
+    document.getElementById('exportEnd').onchange = e => { ui.exportEnd = e.target.value || todayISO(); renderExport(); };
+    document.getElementById('exportStatus').onchange = e => { ui.exportStatus = e.target.value; renderExport(); };
+    document.getElementById('xlsxExport').onclick = exportXLSX;
+    document.getElementById('createInvoice')?.addEventListener('click', openInvoiceModal);
+    document.getElementById('invoiceSetup')?.addEventListener('click', openSettingsModal);
+    document.getElementById('businessSettings').onclick = openSettingsModal;
+    document.getElementById('backupBtn').onclick = saveBackup;
+    document.getElementById('restoreBtn').onclick = () => document.getElementById('restoreFile').click();
+    document.getElementById('restoreFile').onchange = restoreBackup;
+    document.querySelectorAll('.print-invoice').forEach(btn => btn.addEventListener('click', () => printInvoice(btn.dataset.id)));
+    document.querySelectorAll('.pay-invoice').forEach(btn => btn.addEventListener('click', () => markInvoicePaid(btn.dataset.id)));
+  }
+
+  function exportEntries() {
+    return sortEntries(state.entries.filter(e => {
+      const clientMatch = ui.exportClientId === 'all' || e.clientId === ui.exportClientId;
+      const statusMatch = ui.exportStatus === 'all' || (e.status || 'unbilled') === ui.exportStatus;
+      return clientMatch && statusMatch && e.date >= ui.exportStart && e.date <= ui.exportEnd;
+    }));
+  }
+
+  function invoiceCandidateEntries() {
+    if (ui.exportClientId === 'all') return [];
+    return sortEntries(state.entries.filter(e => e.clientId === ui.exportClientId && (e.status || 'unbilled') === 'unbilled' && e.date >= ui.exportStart && e.date <= ui.exportEnd));
+  }
+
+  function openModal(title, body, actions = '') {
+    modalRoot.innerHTML = `
+      <div class="modal-backdrop" id="modalBackdrop">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+          <div class="modal-head"><div class="modal-title">${esc(title)}</div><button class="close-btn" id="closeModal" type="button" aria-label="Close">×</button></div>
+          ${body}
+          ${actions}
+        </div>
+      </div>
+    `;
+    document.getElementById('closeModal').onclick = () => closeModal();
+    const modal = modalRoot.querySelector('.modal');
+    modal?.querySelectorAll('input, select, textarea').forEach(control => {
+      control.addEventListener('input', () => { modal.dataset.dirty = 'true'; });
+      control.addEventListener('change', () => { modal.dataset.dirty = 'true'; });
+    });
+  }
+
+  function closeModal(force = false) {
+    const modal = modalRoot.querySelector('.modal');
+    if (!force && modal?.dataset.dirty === 'true' && !confirm('Discard unsaved changes?')) return;
+    modalRoot.innerHTML = '';
+  }
+
+  function openClientModal(clientId = '') {
+    const existing = clientId ? getClient(clientId) : null;
+    openModal(existing ? 'Edit client' : 'Add client', `
+      <div class="control-grid">
+        <div class="field full">
+          <label for="clientName">Client name</label>
+          <input id="clientName" autocomplete="off" value="${esc(existing?.name || '')}" placeholder="e.g. Client name" />
+        </div>
+        <div class="field full">
+          <label for="clientEmail">Email <span class="optional">optional</span></label>
+          <input id="clientEmail" type="email" autocomplete="email" value="${esc(existing?.email || '')}" placeholder="client@example.com" />
+        </div>
+        <div class="field full">
+          <label for="clientAddress">Billing address <span class="optional">optional</span></label>
+          <textarea id="clientAddress" autocomplete="street-address" placeholder="Address used on invoices">${esc(existing?.billingAddress || '')}</textarea>
+        </div>
+        <div class="field full">
+          <label for="clientDetails">Client notes</label>
+          <textarea id="clientDetails" autocomplete="off" placeholder="Client-specific notes, billing details, contact information, or other reference">${esc(existing?.details || '')}</textarea>
+        </div>
+      </div>
+      <div class="form-error" id="clientError"></div>
+      <div class="modal-actions">
+        ${existing ? '<button class="btn danger" id="deleteClient" type="button">Delete</button>' : '<button class="btn secondary" id="cancelClient" type="button">Cancel</button>'}
+        <button class="btn primary" id="saveClient" type="button">Save client</button>
+      </div>
+    `);
+
+    document.getElementById('cancelClient')?.addEventListener('click', closeModal);
+    document.getElementById('saveClient').onclick = async () => {
+      const name = document.getElementById('clientName').value.trim();
+      const email = document.getElementById('clientEmail').value.trim();
+      const billingAddress = document.getElementById('clientAddress').value.trim();
+      const details = document.getElementById('clientDetails').value.trim();
+      const error = document.getElementById('clientError');
+      if (!name) { error.textContent = 'Client name is required.'; error.classList.add('show'); return; }
       if (existing) {
-        known++;
-        if (!existing.relativePath && entry.relativePath) existing.relativePath = entry.relativePath;
-        continue;
+        existing.name = name; existing.email = email; existing.billingAddress = billingAddress; existing.details = details;
+      } else {
+        const newClient = { id: id(), name, email, billingAddress, details, createdAt: new Date().toISOString() };
+        state.clients.push(newClient);
+        ui.selectedClientId = newClient.id;
       }
-      state.permits.push({
-        id:cryptoRandomId('permit'), sourceFilename:entry.name, relativePath:entry.relativePath || entry.name,
-        addressNumber:parsed.addressNumber, street:parsed.street, workType:parsed.workType, contractor:parsed.contractor,
-        permitNumber:'', status:'Upcoming', archived:false, startDate:'', endDate:'', rowImpact:'', notes:'',
-        lat:null, lng:null, matchMethod:'', matchedFullAddr:'', importedAt:new Date().toISOString(), updatedAt:new Date().toISOString()
-      });
-      added++;
-    }
-    saveState();
-    refreshFilterOptions();
-    await locateUnlocatedPermits({ quiet:true });
-    renderAll();
-    if (!opts.silent) toast(`${added} added • ${known} already known${invalid ? ` • ${invalid} filename${invalid===1?'':'s'} skipped`:''}. No PDF contents read.`);
-  }
+      await persist(); closeModal(true); toast(existing ? 'Client updated' : 'Client added'); render();
+    };
 
-  function parsePermitFilename(filename) {
-    if (!/\.pdf$/i.test(filename)) return null;
-    const base = filename.replace(/\.pdf$/i, '');
-    const parts = base.split(' - ');
-    if (parts.length < 4) return null;
-    return { addressNumber:parts[0], street:parts[1], workType:parts[2], contractor:parts.slice(3).join(' - ') };
-  }
-
-  async function locateUnlocatedPermits({ quiet=false }={}) {
-    const queue = state.permits.filter(p => !isFiniteNumber(p.lat) || !isFiniteNumber(p.lng));
-    let located=0;
-    for (const permit of queue) if (await locatePermit(permit,false,true)) located++;
-    saveState();
-    if (!quiet && located) toast(`Located ${located} permit${located===1?'':'s'} using Boulder public address data.`);
-  }
-
-  async function locatePermit(permit, force=false, quiet=false) {
-    if (!permit || (!force && isFiniteNumber(permit.lat) && isFiniteNumber(permit.lng))) return true;
-    try {
-      const result = await queryAddressPoint(permit.addressNumber, permit.street);
-      if (!result) {
-        permit.matchMethod='unlocated'; permit.matchedFullAddr='';
-        if (!quiet) toast(`No confident public-address match for ${displayAddress(permit)}.`);
-        return false;
-      }
-      permit.lat=result.lat; permit.lng=result.lng; permit.matchMethod='Boulder Address Points'; permit.matchedFullAddr=result.fullAddr || ''; permit.updatedAt=new Date().toISOString();
-      return true;
-    } catch (err) {
-      permit.matchMethod = permit.matchMethod || 'lookup unavailable';
-      if (!quiet) toast('Boulder address lookup is unavailable right now; the permit remains in the unlocated list.');
-      return false;
-    }
-  }
-
-  async function queryAddressPoint(addressNumberRaw, streetRaw) {
-    const cacheKey = `${String(addressNumberRaw).trim()}|${normalizeMatch(streetRaw)}`;
-    if (addressLookupCache.has(cacheKey)) return addressLookupCache.get(cacheKey);
-    const addressNumber = String(addressNumberRaw).trim().replace(/'/g,"''");
-    const params = new URLSearchParams({
-      where:`ADDRNUM='${addressNumber}'`, outFields:'FULLADDR,ADDRNUM,PREDIR,STREETNAME,STREETSUFFIX,POSTDIR,CITY,STATUS,POINTTYPE',
-      returnGeometry:'true', outSR:'4326', resultRecordCount:'50', f:'geojson'
+    document.getElementById('deleteClient')?.addEventListener('click', async () => {
+      const count = state.entries.filter(e => e.clientId === existing.id).length;
+      const invoiceCount = state.invoices.filter(inv => inv.clientId === existing.id).length;
+      const extra = invoiceCount ? ` and ${invoiceCount} saved invoice${invoiceCount === 1 ? '' : 's'}` : '';
+      const msg = count ? `Delete ${existing.name}, all ${count} associated work blocks${extra}? This cannot be undone.` : `Delete ${existing.name}${extra}?`;
+      if (!confirm(msg)) return;
+      state.clients = state.clients.filter(c => c.id !== existing.id);
+      state.entries = state.entries.filter(e => e.clientId !== existing.id);
+      state.invoices = state.invoices.filter(inv => inv.clientId !== existing.id);
+      if (ui.selectedClientId === existing.id) ui.selectedClientId = state.clients[0]?.id || '';
+      ui.clientDetailId = '';
+      await persist(); closeModal(true); toast('Client deleted'); render();
     });
-    const res = await fetch(`${ADDRESS_QUERY}?${params}`);
-    if (!res.ok) throw new Error(`Address service ${res.status}`);
-    const data = await res.json();
-    const candidates = (data.features || []).filter(f => Array.isArray(f.geometry?.coordinates));
-    if (!candidates.length) { addressLookupCache.set(cacheKey,null); return null; }
-    const scored = candidates.map(f => ({ f, score:scoreAddressCandidate(streetRaw,f.properties||{}) })).sort((a,b)=>b.score-a.score);
-    if (scored[0].score < 45) { addressLookupCache.set(cacheKey,null); return null; }
-    const f = scored[0].f;
-    const result = { lng:f.geometry.coordinates[0], lat:f.geometry.coordinates[1], fullAddr:f.properties?.FULLADDR || '' };
-    addressLookupCache.set(cacheKey,result);
-    return result;
   }
 
-  function scoreAddressCandidate(sourceStreet, props) {
-    const src=normalizeMatch(sourceStreet), predir=normalizeMatch(props.PREDIR||''), name=normalizeMatch(props.STREETNAME||''), suffix=normalizeMatch(props.STREETSUFFIX||''), postdir=normalizeMatch(props.POSTDIR||'');
-    const full=[predir,name,suffix,postdir].filter(Boolean).join(' '), noSuffix=[predir,name,postdir].filter(Boolean).join(' ');
-    let score=0;
-    if (src===full) score+=100; if (src===noSuffix) score+=95; if (src===name) score+=85; if (full.startsWith(src+' ')) score+=65; if (noSuffix.startsWith(src+' ')) score+=65;
-    if (name===src.replace(/^(n|s|e|w)\s+/,'')) score+=55; if ((props.CITY||'').toLowerCase()==='boulder') score+=10; if ((props.STATUS||'').toLowerCase()==='current') score+=5; if ((props.POINTTYPE||'').toLowerCase()==='building') score+=3;
-    return score;
+  function openServiceModal(serviceId = '') {
+    const existing = serviceId ? getService(serviceId) : null;
+    const initialType = existing?.billingType === 'fixed' ? 'fixed' : 'hourly';
+    openModal(existing ? 'Edit rate' : 'Add rate', `
+      <div class="control-grid">
+        <div class="field full"><label for="serviceName">Service / work type</label><input id="serviceName" value="${esc(existing?.name || '')}" placeholder="e.g. Caretaking, Consulting, Site visit" /></div>
+        <div class="field full">
+          <label for="serviceBillingType">Default billing method</label>
+          <select id="serviceBillingType"><option value="hourly" ${initialType === 'hourly' ? 'selected' : ''}>Hourly</option><option value="fixed" ${initialType === 'fixed' ? 'selected' : ''}>Fixed price per block</option></select>
+        </div>
+        <div class="field full"><label for="serviceRate" id="serviceRateLabel">${initialType === 'fixed' ? 'Default fixed amount' : 'Default hourly rate'}</label><input id="serviceRate" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(existing?.rate ?? '')}" placeholder="0.00" /></div>
+      </div>
+      <div class="form-error" id="serviceError"></div>
+      <div class="modal-actions">
+        ${existing ? '<button class="btn danger" id="deleteService" type="button">Delete</button>' : '<button class="btn secondary" id="cancelService" type="button">Cancel</button>'}
+        <button class="btn primary" id="saveService" type="button">Save rate</button>
+      </div>
+    `);
+
+    document.getElementById('serviceBillingType').onchange = e => {
+      document.getElementById('serviceRateLabel').textContent = e.target.value === 'fixed' ? 'Default fixed amount' : 'Default hourly rate';
+    };
+    document.getElementById('cancelService')?.addEventListener('click', closeModal);
+    document.getElementById('saveService').onclick = async () => {
+      const name = document.getElementById('serviceName').value.trim();
+      const billingType = document.getElementById('serviceBillingType').value === 'fixed' ? 'fixed' : 'hourly';
+      const rateRaw = document.getElementById('serviceRate').value;
+      const rate = Number(rateRaw);
+      const error = document.getElementById('serviceError');
+      if (!name || rateRaw === '' || !Number.isFinite(rate) || rate < 0) {
+        error.textContent = 'Enter a service name and a valid default amount.'; error.classList.add('show'); return;
+      }
+      if (existing) { existing.name = name; existing.rate = rate; existing.billingType = billingType; }
+      else state.services.push({ id: id(), name, rate, billingType });
+      await persist(); closeModal(true); toast(existing ? 'Rate updated' : 'Rate added'); render();
+    };
+
+    document.getElementById('deleteService')?.addEventListener('click', async () => {
+      if (!confirm(`Delete ${existing.name} from the rate list? Existing work logs will keep their saved service name, billing method, and rate.`)) return;
+      state.services = state.services.filter(s => s.id !== existing.id);
+      await persist(); closeModal(true); toast('Rate deleted'); render();
+    });
   }
 
-  async function resolveVenues() {
-    venueLayer.clearLayers(); venueBuildingLayer.clearLayers(); venueContextLayer.clearLayers(); venueRuntime.clear();
-    for (const venue of VENUES) {
-      try {
-        const loc = await queryAddressPoint(venue.addressNumber, venue.street);
-        if (!loc) continue;
-        venue.lat=loc.lat; venue.lng=loc.lng; venue.matchedFullAddr=loc.fullAddr; venueRuntime.set(venue.id,venue);
-        addVenueMarker(venue);
-        L.circle([venue.lat,venue.lng], { radius:VENUE_NEAR_FEET*.3048, color:'#b39a36', weight:1, opacity:.35, fillColor:'#b39a36', fillOpacity:.035, dashArray:'4 5', interactive:false }).addTo(venueContextLayer);
-        await addVenueBuilding(venue);
-      } catch (err) { console.warn('Venue lookup failed', venue.name, err); }
-    }
-    updateLayerVisibility();
-  }
+  function openBlockModal(entryId = '') {
+    if (!state.clients.length) { openClientModal(); return; }
+    const existing = entryId ? state.entries.find(e => e.id === entryId) : null;
+    const clientId = existing?.clientId || ui.selectedClientId || state.clients[0].id;
+    const date = existing?.date || ui.selectedDate || todayISO();
+    const services = [...state.services].sort((a,b) => a.name.localeCompare(b.name));
+    const existingServiceAvailable = existing?.serviceId ? Boolean(getService(existing.serviceId)) : false;
+    const selectedService = existing ? (existingServiceAvailable ? existing.serviceId : 'custom') : (services[0]?.id || 'custom');
+    const initialServiceValue = selectedService;
+    const priorDayBlocks = existing ? [] : sortEntries(state.entries.filter(e => e.clientId === clientId && e.date === date));
+    const priorEnd = priorDayBlocks.at(-1)?.end;
+    const startDefault = existing?.start || priorEnd || '08:00';
+    const endDefault = existing?.end || addMinutesToTime(startDefault, 60);
+    const serviceDefault = getService(selectedService);
+    const initialRate = existing?.rate ?? (serviceDefault?.rate ?? '');
+    const initialBillingType = existing?.billingType === 'fixed' ? 'fixed' : (serviceDefault?.billingType === 'fixed' ? 'fixed' : 'hourly');
+    const customName = existing && selectedService === 'custom' ? (existing.serviceName || '') : '';
+    const linkedInvoice = existing ? state.invoices.find(inv => Array.isArray(inv.entryIds) && inv.entryIds.includes(existing.id)) : null;
+    const existingStatus = existing?.status || 'unbilled';
+    const initialMileageMode = ['manual','odometer'].includes(existing?.mileageMode) ? existing.mileageMode : 'none';
+    const initialMileageRate = existing ? Number(existing.mileageRate || 0) : Number(state.settings.defaultMileageRate || 0);
+    const initialMileageMiles = existing ? Number(existing.mileageMiles || 0) : '';
+    const initialMileageStart = existing?.mileageStart ?? '';
+    const initialMileageEnd = existing?.mileageEnd ?? '';
 
-  function addVenueMarker(venue) {
-    const icon=L.divIcon({ className:'', html:'<div class="venue-marker"><span></span></div>', iconSize:[22,22], iconAnchor:[11,11] });
-    const marker=L.marker([venue.lat,venue.lng],{icon,zIndexOffset:500});
-    marker.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Address</span>${escapeHtml(venue.address)}</div><div class="popup-row"><span class="popup-label">Use</span>${escapeHtml(venue.uses)}</div>`).addTo(venueLayer);
-  }
+    openModal(existing ? 'Edit work block' : 'Add work block', `
+      <div class="control-grid">
+        <div class="field full">
+          <label for="blockClient">Client</label>
+          <select id="blockClient">${state.clients.map(c => `<option value="${esc(c.id)}" ${c.id === clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="field full"><label for="blockDate">Shift start date</label><input id="blockDate" type="date" value="${esc(date)}" /></div>
+        <div class="field"><label for="blockStart">Start</label><input id="blockStart" type="time" value="${esc(startDefault)}" /></div>
+        <div class="field"><label for="blockEnd">End</label><input id="blockEnd" type="time" value="${esc(endDefault)}" /></div>
+        <div class="field full"><div class="field-help overnight-help">If the end time is earlier than the start time, Invox treats it as ending the following day.</div></div>
+        <div class="field full">
+          <label for="blockService">Service / work type</label>
+          <select id="blockService">
+            ${services.map(s => `<option value="${esc(s.id)}" ${s.id === selectedService ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+            <option value="custom" ${selectedService === 'custom' ? 'selected' : ''}>Custom / unlisted</option>
+          </select>
+        </div>
+        <div class="field full" id="customServiceField" style="display:${selectedService === 'custom' ? 'flex' : 'none'}">
+          <label for="customService">Custom service name</label><input id="customService" value="${esc(customName)}" placeholder="Describe the work performed" />
+        </div>
+        <div class="field">
+          <label for="blockBillingType">Billing method</label>
+          <select id="blockBillingType"><option value="hourly" ${initialBillingType === 'hourly' ? 'selected' : ''}>Hourly</option><option value="fixed" ${initialBillingType === 'fixed' ? 'selected' : ''}>Fixed price</option></select>
+        </div>
+        <div class="field"><label for="blockRate" id="blockRateLabel">${initialBillingType === 'fixed' ? 'Fixed amount' : 'Hourly rate'}</label><input id="blockRate" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(initialRate)}" placeholder="0.00" /></div>
+        <div class="field full mileage-section">
+          <label for="mileageMode">Mileage <span class="optional">optional</span></label>
+          <select id="mileageMode">
+            <option value="none" ${initialMileageMode === 'none' ? 'selected' : ''}>No mileage</option>
+            <option value="manual" ${initialMileageMode === 'manual' ? 'selected' : ''}>Enter miles directly</option>
+            <option value="odometer" ${initialMileageMode === 'odometer' ? 'selected' : ''}>Starting + ending mileage</option>
+          </select>
+          <div class="field-help">Track billable travel either by entering the miles yourself or letting Invox calculate them from start/end odometer readings.</div>
+        </div>
+        <div class="field full mileage-fields" id="mileageManualFields" style="display:${initialMileageMode === 'manual' ? 'grid' : 'none'}">
+          <div class="field"><label for="mileageMiles">Miles</label><input id="mileageMiles" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(initialMileageMiles)}" placeholder="0.0" /></div>
+          <div class="field"><label for="mileageRateManual">Rate per mile</label><input id="mileageRateManual" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(initialMileageRate)}" placeholder="0.00" /></div>
+        </div>
+        <div class="field full mileage-fields" id="mileageOdometerFields" style="display:${initialMileageMode === 'odometer' ? 'grid' : 'none'}">
+          <div class="field"><label for="mileageStart">Starting mileage</label><input id="mileageStart" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(initialMileageStart)}" placeholder="0.0" /></div>
+          <div class="field"><label for="mileageEnd">Ending mileage</label><input id="mileageEnd" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(initialMileageEnd)}" placeholder="0.0" /></div>
+          <div class="field full"><label for="mileageRateOdometer">Rate per mile</label><input id="mileageRateOdometer" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(initialMileageRate)}" placeholder="0.00" /></div>
+        </div>
+        <div class="field full">
+          <label for="blockStatus">Billing status</label>
+          <select id="blockStatus" ${linkedInvoice ? 'disabled' : ''}>
+            <option value="unbilled" ${existingStatus === 'unbilled' ? 'selected' : ''}>Unbilled</option>
+            <option value="invoiced" ${existingStatus === 'invoiced' ? 'selected' : ''}>Invoiced</option>
+            <option value="paid" ${existingStatus === 'paid' ? 'selected' : ''}>Paid</option>
+          </select>
+          ${linkedInvoice ? `<div class="field-help">Status is managed by invoice ${esc(linkedInvoice.number)}.</div>` : '<div class="field-help">Use Invoiced/Paid for work billed outside Invox, or leave Unbilled for invoice creation here.</div>'}
+        </div>
+        <div class="field full"><label for="blockNotes">Block notes</label><textarea id="blockNotes" placeholder="What was done during this block?">${esc(existing?.notes || '')}</textarea></div>
+      </div>
+      <div class="preview-bar"><span id="blockDuration">—</span><strong id="blockAmount">—</strong></div>
+      <div class="mileage-preview" id="mileagePreview" style="display:none"></div>
+      <div class="form-error" id="blockError"></div>
+      <div class="modal-actions"><button class="btn secondary" id="cancelBlock" type="button">Cancel</button><button class="btn primary" id="saveBlock" type="button">Save block</button></div>
+    `);
 
-  async function addVenueBuilding(venue) {
-    const params=new URLSearchParams({ where:'1=1', geometry:`${venue.lng},${venue.lat}`, geometryType:'esriGeometryPoint', inSR:'4326', spatialRel:'esriSpatialRelIntersects', distance:'120', units:'esriSRUnit_Meter', outFields:'FACILITYID,SHORTNAME,LONGNAME,BLDGTYPE', returnGeometry:'true', outSR:'4326', resultRecordCount:'100', f:'geojson' });
-    const res=await fetch(`${BUILDING_QUERY}?${params}`); if (!res.ok) throw new Error(`Building service ${res.status}`);
-    const data=await res.json(), features=data.features||[]; if (!features.length) return;
-    const point=turf.point([venue.lng,venue.lat]);
-    const best=features.map(f=>({f,score:scoreBuilding(venue,point,f)})).sort((a,b)=>b.score-a.score)[0]?.f; if (!best) return;
-    const facilityId=best.properties?.FACILITYID || `${venue.id}:${JSON.stringify(best.geometry).slice(0,100)}`;
-    if ([...venueBuildingLayer.getLayers()].some(l=>l.options?.facilityId===facilityId)) return;
-    const layer=L.geoJSON(best,{ style:{ color:'#a8902f', weight:1.5, fillColor:'#d7c66d', fillOpacity:.32 }, onEachFeature:(_f,l)=>l.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Layer</span>Venue building</div>`) });
-    layer.options.facilityId=facilityId; layer.eachLayer(l=>{l.options.facilityId=facilityId;}); layer.addTo(venueBuildingLayer);
-  }
-
-  function scoreBuilding(venue, point, feature) {
-    let score=0; try { if (turf.booleanPointInPolygon(point,feature)) score+=200; } catch {}
-    const label=normalizeMatch(`${feature.properties?.LONGNAME||''} ${feature.properties?.SHORTNAME||''}`);
-    for (const token of normalizeMatch(venue.name).split(' ').filter(t=>t.length>3)) if (label.includes(token)) score+=15;
-    try { score-=Math.min(turf.pointToLineDistance(point,turf.polygonToLine(feature),{units:'meters'}),150); } catch {}
-    return score;
-  }
-
-  // ---------------- Corridor workflow ----------------
-
-  function startStreetCorridorMode() {
-    cancelCorridorMode(true);
-    els.corridorActions.hidden=true;
-    corridorMode='select-street'; selectedStreet=null; sectionStart=null; pendingCorridor=null;
-    showCorridorMode('Select a street','Click a Boulder street on the map. Pas de Deux will use the public street centerline, not a hand-drawn approximation.');
-  }
-
-  function startCustomCorridorMode() {
-    cancelCorridorMode(true);
-    els.corridorActions.hidden=true;
-    corridorMode='draw-custom'; pendingCorridor=null;
-    showCorridorMode('Draw a custom route','Click along the route. Click the last point again to finish, or Cancel / Esc to leave without creating anything.');
-    activeDrawHandler = new L.Draw.Polyline(map,{ shapeOptions:{ color:'#2e6f9e', weight:5, opacity:.9 }, guidelineDistance:14 });
-    activeDrawHandler.enable();
-  }
-
-  async function selectStreetAt(latlng) {
-    const token=++corridorRequestToken;
-    showCorridorMode('Finding street…','Matching your click to Boulder public street centerlines.');
-    try {
-      const selected=await queryNearestStreet(latlng);
-      if (token!==corridorRequestToken || corridorMode!=='select-street') return;
-      if (!selected) {
-        showCorridorMode('Select a street','No street centerline was close enough to that click. Try again closer to the roadway.');
+    const serviceEl = document.getElementById('blockService');
+    const rateEl = document.getElementById('blockRate');
+    const billingEl = document.getElementById('blockBillingType');
+    const customField = document.getElementById('customServiceField');
+    const mileageModeEl = document.getElementById('mileageMode');
+    const mileageManualFields = document.getElementById('mileageManualFields');
+    const mileageOdometerFields = document.getElementById('mileageOdometerFields');
+    const updateRateLabel = () => {
+      document.getElementById('blockRateLabel').textContent = billingEl.value === 'fixed' ? 'Fixed amount' : 'Hourly rate';
+    };
+    const readMileageForm = () => {
+      const mode = mileageModeEl.value;
+      if (mode === 'manual') {
+        const miles = Number(document.getElementById('mileageMiles').value || 0);
+        const mileageRate = Number(document.getElementById('mileageRateManual').value || 0);
+        return { mode, miles: Number.isFinite(miles) ? Math.max(0, miles) : 0, rate: Number.isFinite(mileageRate) ? Math.max(0, mileageRate) : 0 };
+      }
+      if (mode === 'odometer') {
+        const odometerStart = Number(document.getElementById('mileageStart').value);
+        const odometerEnd = Number(document.getElementById('mileageEnd').value);
+        const mileageRate = Number(document.getElementById('mileageRateOdometer').value || 0);
+        const valid = Number.isFinite(odometerStart) && Number.isFinite(odometerEnd) && odometerEnd >= odometerStart;
+        return { mode, miles: valid ? odometerEnd - odometerStart : 0, rate: Number.isFinite(mileageRate) ? Math.max(0, mileageRate) : 0, odometerStart, odometerEnd, valid };
+      }
+      return { mode: 'none', miles: 0, rate: 0 };
+    };
+    const updateMileageFields = () => {
+      mileageManualFields.style.display = mileageModeEl.value === 'manual' ? 'grid' : 'none';
+      mileageOdometerFields.style.display = mileageModeEl.value === 'odometer' ? 'grid' : 'none';
+      updatePreview();
+    };
+    const updatePreview = () => {
+      const dateValue = document.getElementById('blockDate').value;
+      const start = document.getElementById('blockStart').value;
+      const end = document.getElementById('blockEnd').value;
+      const rate = Number(rateEl.value || 0);
+      if (!start || !end) return;
+      if (timeToMinutes(end) === timeToMinutes(start)) {
+        document.getElementById('blockDuration').textContent = 'Start and end match';
+        document.getElementById('blockAmount').textContent = '—';
         return;
       }
-      selectedStreet=selected;
-      showCorridorMode('Loading street…',`Loading ${selected.label} centerline segments.`);
-      selectedStreet.features=await queryWholeStreet(selected.feature);
-      if (token!==corridorRequestToken || corridorMode!=='select-street') return;
-      if (!selectedStreet.features.length) {
-        showCorridorMode('Select a street','The street was identified, but its geometry could not be loaded. Try again.');
-        return;
-      }
-      previewStreetFeatures(selectedStreet.features,false);
-      els.selectedStreetName.textContent=selectedStreet.label;
-      els.streetScopeDialog.returnValue='';
-      els.streetScopeDialog.showModal();
-      els.corridorModeBar.hidden=true;
-    } catch (err) {
-      console.warn('Street selection failed',err);
-      showCorridorMode('Select a street','Street data could not be loaded. Try again, or use Draw custom route.');
-    }
-  }
-
-  async function queryNearestStreet(latlng) {
-    const geometry=JSON.stringify({ x:latlng.lng, y:latlng.lat, spatialReference:{wkid:4326} });
-    const params=new URLSearchParams({
-      where:"LIFECYCLE='Active'", geometry, geometryType:'esriGeometryPoint', inSR:'4326', spatialRel:'esriSpatialRelIntersects', distance:'120', units:'esriSRUnit_Foot',
-      outFields:'OBJECTID,LIFECYCLE,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS,CENTERLINE', returnGeometry:'true', outSR:'4326', resultRecordCount:'30', f:'geojson'
-    });
-    const res=await fetch(`${STREET_QUERY}?${params}`); if (!res.ok) throw new Error(`Street service ${res.status}`);
-    const data=await res.json(), point=turf.point([latlng.lng,latlng.lat]);
-    const candidates=(data.features||[]).filter(f=>f.geometry && (f.geometry.type==='LineString' || f.geometry.type==='MultiLineString'));
-    if (!candidates.length) return null;
-    const ranked=[];
-    for (const f of candidates) {
-      let distance=Infinity;
-      for (const line of featureLines(f)) {
-        try { distance=Math.min(distance,turf.pointToLineDistance(point,line,{units:'feet'})); } catch {}
-      }
-      ranked.push({f,distance});
-    }
-    ranked.sort((a,b)=>a.distance-b.distance);
-    if (!Number.isFinite(ranked[0]?.distance) || ranked[0].distance>140) return null;
-    const feature=ranked[0].f;
-    return { feature, label:streetLabel(feature.properties||{}), key:streetKey(feature.properties||{}), distanceFeet:ranked[0].distance, features:[] };
-  }
-
-  async function queryWholeStreet(seedFeature) {
-    const name=String(seedFeature.properties?.STREETNAME||'').replace(/'/g,"''");
-    if (!name) return [];
-    const params=new URLSearchParams({ where:`STREETNAME='${name}' AND LIFECYCLE='Active'`, outFields:'OBJECTID,LIFECYCLE,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS,CENTERLINE', returnGeometry:'true', outSR:'4326', resultRecordCount:'1000', f:'geojson' });
-    const res=await fetch(`${STREET_QUERY}?${params}`); if (!res.ok) throw new Error(`Street service ${res.status}`);
-    const data=await res.json();
-    const key=streetKey(seedFeature.properties||{});
-    return (data.features||[]).filter(f=>streetKey(f.properties||{})===key && f.geometry);
-  }
-
-  function streetKey(props) {
-    return [props.PREDIR||'',props.STREETNAME||'',props.STREETTYPE||'',props.SUFFIX||''].map(v=>String(v).trim().toUpperCase()).join('|');
-  }
-
-  function streetLabel(props) {
-    return [props.PREDIR,props.STREETNAME,props.STREETTYPE,props.SUFFIX].map(v=>String(v||'').trim()).filter(Boolean).join(' ');
-  }
-
-  function chooseWholeStreet() {
-    if (!selectedStreet?.features?.length) return;
-    pendingCorridor={ sourceType:'street', scope:'Entire street', streetLabel:selectedStreet.label, streetKey:selectedStreet.key, paths:featuresToPaths(selectedStreet.features) };
-    els.streetScopeDialog.returnValue='default';
-    els.streetScopeDialog.close();
-    exitCorridorMapMode(false);
-    prepareCorridorForm({ suggestedName:selectedStreet.label });
-  }
-
-  function startStreetSectionMode() {
-    if (!selectedStreet?.features?.length) return;
-    els.streetScopeDialog.returnValue='default';
-    els.streetScopeDialog.close();
-    corridorMode='select-section'; sectionStart=null;
-    showCorridorMode(`Select section — ${selectedStreet.label}`,'Click the first end of the street section. Then click the second end. Both clicks will snap to the selected street.');
-    previewStreetFeatures(selectedStreet.features,false);
-  }
-
-  function chooseSectionPoint(latlng) {
-    if (!selectedStreet?.features?.length) return;
-    const snapped=snapPointToStreet(latlng,selectedStreet.features);
-    if (!snapped) { toast('Could not snap that point to the selected street.'); return; }
-    if (!sectionStart) {
-      sectionStart=snapped;
-      corridorEndpointLayer.clearLayers();
-      L.circleMarker([snapped.lat,snapped.lng],{radius:6,color:'#17324d',weight:3,fillColor:'#fff',fillOpacity:1}).addTo(corridorEndpointLayer);
-      showCorridorMode(`Select section — ${selectedStreet.label}`,'Start set. Click the other end of the section, or Cancel / Esc.');
-      return;
-    }
-    const sectionEnd=snapped;
-    L.circleMarker([sectionEnd.lat,sectionEnd.lng],{radius:6,color:'#17324d',weight:3,fillColor:'#fff',fillOpacity:1}).addTo(corridorEndpointLayer);
-    const paths=clipStreetToSection(selectedStreet.features,sectionStart,sectionEnd);
-    if (!paths.length) { toast('That section could not be resolved. Try the two endpoints again.'); sectionStart=null; corridorEndpointLayer.clearLayers(); return; }
-    pendingCorridor={ sourceType:'street', scope:'Selected section', streetLabel:selectedStreet.label, streetKey:selectedStreet.key, paths };
-    corridorPreviewLayer.clearLayers();
-    previewPaths(paths,true);
-    exitCorridorMapMode(false);
-    prepareCorridorForm({ suggestedName:selectedStreet.label });
-  }
-
-  function snapPointToStreet(latlng,features) {
-    const point=turf.point([latlng.lng,latlng.lat]);
-    let best=null;
-    for (const feature of features) {
-      for (const line of featureLines(feature)) {
-        try {
-          const distance=turf.pointToLineDistance(point,line,{units:'feet'});
-          if (!best || distance<best.distance) {
-            const snapped=turf.nearestPointOnLine(line,point,{units:'feet'});
-            best={ distance, lat:snapped.geometry.coordinates[1], lng:snapped.geometry.coordinates[0] };
-          }
-        } catch {}
-      }
-    }
-    return best;
-  }
-
-  function clipStreetToSection(features,a,b) {
-    const padMeters=55;
-    const midLat=(a.lat+b.lat)/2;
-    const padLat=padMeters/111320;
-    const padLng=padMeters/(111320*Math.cos(midLat*Math.PI/180));
-    const bbox=[Math.min(a.lng,b.lng)-padLng,Math.min(a.lat,b.lat)-padLat,Math.max(a.lng,b.lng)+padLng,Math.max(a.lat,b.lat)+padLat];
-    const paths=[];
-    for (const feature of features) {
-      for (const line of featureLines(feature)) {
-        try {
-          const clipped=turf.bboxClip(line,bbox);
-          if (clipped?.geometry?.type==='LineString' && clipped.geometry.coordinates.length>1) paths.push(clipped.geometry.coordinates.map(([lng,lat])=>[lat,lng]));
-          if (clipped?.geometry?.type==='MultiLineString') for (const coords of clipped.geometry.coordinates) if (coords.length>1) paths.push(coords.map(([lng,lat])=>[lat,lng]));
-        } catch {}
-      }
-    }
-    return dedupePaths(paths);
-  }
-
-  function featureLines(feature) {
-    if (!feature?.geometry) return [];
-    if (feature.geometry.type==='LineString') return [turf.lineString(feature.geometry.coordinates)];
-    if (feature.geometry.type==='MultiLineString') return feature.geometry.coordinates.map(coords=>turf.lineString(coords));
-    return [];
-  }
-
-  function featuresToPaths(features) {
-    const paths=[];
-    for (const f of features) {
-      if (f.geometry?.type==='LineString') paths.push(f.geometry.coordinates.map(([lng,lat])=>[lat,lng]));
-      else if (f.geometry?.type==='MultiLineString') for (const coords of f.geometry.coordinates) paths.push(coords.map(([lng,lat])=>[lat,lng]));
-    }
-    return dedupePaths(paths.filter(p=>p.length>1));
-  }
-
-  function dedupePaths(paths) {
-    const seen=new Set();
-    return paths.filter(path=>{
-      const key=path.map(([lat,lng])=>`${lat.toFixed(6)},${lng.toFixed(6)}`).join(';');
-      const rev=[...path].reverse().map(([lat,lng])=>`${lat.toFixed(6)},${lng.toFixed(6)}`).join(';');
-      if (seen.has(key)||seen.has(rev)) return false;
-      seen.add(key); return true;
-    });
-  }
-
-  function previewStreetFeatures(features,strong) { previewPaths(featuresToPaths(features),strong); }
-
-  function previewPaths(paths,strong=false) {
-    corridorPreviewLayer.clearLayers();
-    for (const path of paths) L.polyline(path,{ color:strong?'#17324d':'#2e6f9e', weight:strong?7:5, opacity:strong?.92:.48, className:'street-preview', interactive:false }).addTo(corridorPreviewLayer);
-  }
-
-  function prepareCorridorForm({suggestedName}) {
-    currentCorridorId=null;
-    els.corridorForm.reset();
-    els.corridorForm.elements.name.value=suggestedName || 'Corridor';
-    els.corridorForm.elements.priority.value='Primary';
-    els.corridorForm.elements.bufferFeet.value=150;
-    els.corridorDialog.returnValue='';
-    els.corridorDialog.showModal();
-  }
-
-  function showCorridorMode(title,text) {
-    els.corridorModeTitle.textContent=title;
-    els.corridorModeText.textContent=text;
-    els.corridorModeBar.hidden=false;
-    document.body.classList.add('mode-selecting');
-  }
-
-  function exitCorridorMapMode(clearPreview=true) {
-    if (activeDrawHandler) { try { activeDrawHandler.disable(); } catch {} activeDrawHandler=null; }
-    corridorMode=null; sectionStart=null;
-    els.corridorModeBar.hidden=true;
-    document.body.classList.remove('mode-selecting');
-    corridorEndpointLayer.clearLayers();
-    if (clearPreview) corridorPreviewLayer.clearLayers();
-  }
-
-  function clearCorridorPreview() {
-    corridorPreviewLayer.clearLayers(); corridorEndpointLayer.clearLayers(); selectedStreet=null; sectionStart=null;
-  }
-
-  function cancelCorridorMode(silent=false) {
-    corridorRequestToken++;
-    exitCorridorMapMode(true);
-    pendingCorridor=null; selectedStreet=null; sectionStart=null;
-    if (els.streetScopeDialog?.open) { els.streetScopeDialog.returnValue='default'; els.streetScopeDialog.close(); }
-    if (els.corridorDialog?.open && !currentCorridorId) { els.corridorDialog.returnValue='cancel'; els.corridorDialog.close(); }
-    if (!silent) toast('Corridor selection cancelled.');
-  }
-
-  function saveCorridorForm(e) {
-    e.preventDefault();
-    const form=new FormData(els.corridorForm);
-    if (currentCorridorId) {
-      const c=state.corridors.find(x=>x.id===currentCorridorId); if (!c) return;
-      c.name=String(form.get('name')||'Corridor'); c.priority=String(form.get('priority')||'Primary'); c.bufferFeet=Number(form.get('bufferFeet')||0); c.notes=String(form.get('notes')||''); c.updatedAt=new Date().toISOString();
-    } else if (pendingCorridor?.paths?.length) {
-      state.corridors.push({ id:cryptoRandomId('corridor'), name:String(form.get('name')||pendingCorridor.streetLabel||'Corridor'), priority:String(form.get('priority')||'Primary'), bufferFeet:Number(form.get('bufferFeet')||0), notes:String(form.get('notes')||''), sourceType:pendingCorridor.sourceType, scope:pendingCorridor.scope, streetLabel:pendingCorridor.streetLabel||'', streetKey:pendingCorridor.streetKey||'', paths:pendingCorridor.paths, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
-    }
-    currentCorridorId=null; pendingCorridor=null; selectedStreet=null;
-    saveState();
-    els.corridorDialog.returnValue='default'; els.corridorDialog.close();
-    clearCorridorPreview(); rebuildCorridors(); renderAll(); toast('Corridor saved.');
-  }
-
-  function rebuildCorridors() {
-    corridorLayer.clearLayers(); corridorRuntime.clear();
-    for (const corridor of state.corridors) addCorridorRuntime(corridor);
-    renderCorridorList();
-  }
-
-  function addCorridorRuntime(corridor) {
-    const group=L.layerGroup();
-    const paths=getCorridorPaths(corridor);
-    const bufferFeet=Number(corridor.bufferFeet||0);
-    if (bufferFeet>0 && paths.length) {
-      try {
-        const geo=paths.length===1 ? turf.lineString(paths[0].map(([lat,lng])=>[lng,lat])) : turf.multiLineString(paths.map(path=>path.map(([lat,lng])=>[lng,lat])));
-        const buffered=turf.buffer(geo,bufferFeet,{units:'feet'});
-        if (buffered) L.geoJSON(buffered,{ style:{ color:'#2e6f9e',weight:1,opacity:.22,fillColor:'#2e6f9e',fillOpacity:.055,dashArray:'4 5' }, interactive:false }).addTo(group);
-      } catch {}
-    }
-    const lines=[];
-    for (const path of paths) {
-      const line=L.polyline(path,{ color:'#2e6f9e',weight:corridor.priority==='Primary'?5:3.5,opacity:.88 }).addTo(group);
-      line.bindPopup(`<div class="popup-title">${escapeHtml(corridor.name)}</div><div class="popup-row"><span class="popup-label">Type</span>${escapeHtml(corridor.scope||'Corridor')}</div><div class="popup-row"><span class="popup-label">Priority</span>${escapeHtml(corridor.priority)}</div><div class="popup-row"><span class="popup-label">Context</span>${escapeHtml(String(corridor.bufferFeet||0))} ft</div>`);
-      lines.push(line);
-    }
-    group.addTo(corridorLayer); corridorRuntime.set(corridor.id,{group,lines});
-  }
-
-  function renderCorridorList() {
-    if (!state.corridors.length) { els.corridorList.innerHTML='<div class="empty-state">No corridors designated yet.</div>'; return; }
-    els.corridorList.innerHTML=state.corridors.map(c=>`<div class="record-card" data-corridor="${escapeHtml(c.id)}"><div class="record-card-head"><div><div class="record-card-name">${escapeHtml(c.name)}</div><div class="record-card-meta">${escapeHtml(c.scope||'Custom route')} • ${escapeHtml(c.priority)} • ${escapeHtml(String(c.bufferFeet||0))} ft context</div></div><div class="record-card-actions"><button class="mini-action" data-action="zoom">View</button><button class="mini-action" data-action="edit">Edit</button><button class="mini-action" data-action="delete">×</button></div></div></div>`).join('');
-    els.corridorList.querySelectorAll('.record-card').forEach(card=>card.addEventListener('click',e=>{
-      const btn=e.target.closest('button'); if (!btn) return; const id=card.dataset.corridor;
-      if (btn.dataset.action==='edit') editCorridor(id); if (btn.dataset.action==='zoom') zoomCorridor(id); if (btn.dataset.action==='delete') deleteCorridor(id);
-    }));
-  }
-
-  function editCorridor(id) {
-    const c=state.corridors.find(x=>x.id===id); if (!c) return;
-    currentCorridorId=id; pendingCorridor=null;
-    els.corridorForm.elements.name.value=c.name; els.corridorForm.elements.priority.value=c.priority; els.corridorForm.elements.bufferFeet.value=c.bufferFeet; els.corridorForm.elements.notes.value=c.notes||'';
-    els.corridorDialog.returnValue=''; els.corridorDialog.showModal();
-  }
-
-  function zoomCorridor(id) {
-    const c=state.corridors.find(x=>x.id===id); if (!c) return;
-    const points=getCorridorPaths(c).flat(); if (points.length) map.fitBounds(points,{padding:[55,55],maxZoom:17});
-  }
-
-  function deleteCorridor(id) {
-    const c=state.corridors.find(x=>x.id===id); if (!c) return;
-    if (!confirm(`Delete corridor “${c.name}”?`)) return;
-    state.corridors=state.corridors.filter(x=>x.id!==id); saveState(); rebuildCorridors(); renderAll();
-  }
-
-  function getCorridorPaths(c) {
-    if (Array.isArray(c.paths)) return c.paths.filter(p=>Array.isArray(p)&&p.length>1);
-    if (Array.isArray(c.latlngs)&&c.latlngs.length>1) return [c.latlngs];
-    return [];
-  }
-
-  // ---------------- Permits, filters, persistence ----------------
-
-  function renderAll() { refreshFilterOptions(); renderPermits(); renderCorridorList(); updateStats(); updateLayerVisibility(); }
-  function scheduleRender() { if (renderScheduled) return; renderScheduled=true; requestAnimationFrame(()=>{renderScheduled=false;renderAll();}); }
-
-  function renderPermits() {
-    permitCluster.clearLayers();
-    for (const permit of filteredPermits()) {
-      if (!isFiniteNumber(permit.lat)||!isFiniteNumber(permit.lng)) continue;
-      const icon=L.divIcon({ className:'', html:`<div class="permit-marker ${statusClass(permit.status)}"><span></span></div>`, iconSize:[18,18], iconAnchor:[9,18], popupAnchor:[0,-16] });
-      const marker=L.marker([permit.lat,permit.lng],{icon,title:displayAddress(permit)});
-      marker.bindPopup(permitPopupHtml(permit));
-      marker.on('popupopen',e=>{ const button=e.popup.getElement()?.querySelector('[data-edit-permit]'); if (button) button.addEventListener('click',()=>openPermitDialog(permit.id),{once:true}); });
-      permitCluster.addLayer(marker);
-    }
-  }
-
-  function permitPopupHtml(p) {
-    return `<div><div class="popup-title">${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType))}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button></div>`;
-  }
-
-  function openPermitDialog(id) {
-    const p=state.permits.find(x=>x.id===id); if (!p) return;
-    currentPermitId=id; els.permitDialogTitle.textContent=displayAddress(p);
-    els.sourceBlock.innerHTML=`<div class="source-grid"><div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div><div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div><div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div><div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div></div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
-    for (const key of ['permitNumber','status','startDate','endDate','rowImpact','notes']) els.permitForm.elements[key].value=p[key]||'';
-    els.matchInfo.textContent=locationDescription(p); els.archivePermitBtn.textContent=p.archived?'Restore from archive':'Archive'; els.permitDialog.showModal();
-  }
-
-  function savePermitForm(e) { e.preventDefault(); const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); els.permitDialog.close(); renderAll(); toast('Permit record saved.'); }
-  function applyFormToPermit(p) { p.permitNumber=els.permitForm.elements.permitNumber.value; p.status=els.permitForm.elements.status.value; p.startDate=els.permitForm.elements.startDate.value; p.endDate=els.permitForm.elements.endDate.value; p.rowImpact=els.permitForm.elements.rowImpact.value; p.notes=els.permitForm.elements.notes.value; p.updatedAt=new Date().toISOString(); }
-
-  function startMoveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); mapMovePermitId=p.id; els.permitDialog.close(); toast(`Click the correct map location for ${displayAddress(p)}.`); }
-
-  async function retryCurrentPermitLocation() {
-    const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); p.lat=null; p.lng=null;
-    const ok=await locatePermit(p,true,false); saveState(); renderAll(); els.matchInfo.textContent=locationDescription(p); if (ok) { map.setView([p.lat,p.lng],17); toast(`Matched ${p.matchedFullAddr||displayAddress(p)}.`); }
-  }
-
-  function archiveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); p.archived=!p.archived; saveState(); els.permitDialog.close(); renderAll(); toast(p.archived?'Permit archived.':'Permit restored from archive.'); }
-
-  function deleteCurrentPermit() {
-    const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return;
-    if (!confirm(`Permanently delete ${p.sourceFilename}?\n\nRe-importing the same filename later would create it again.`)) return;
-    state.permits=state.permits.filter(x=>x.id!==p.id); saveState(); els.permitDialog.close(); renderAll(); toast('Permit permanently deleted from local data.');
-  }
-
-  function showUnlocated() { renderUnlocatedList(); els.unlocatedDialog.showModal(); }
-  function renderUnlocatedList() {
-    const items=state.permits.filter(p=>!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng));
-    if (!items.length) { els.unlocatedList.innerHTML='<div class="empty-state">Every permit currently has a map location.</div>'; return; }
-    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small></div><div><button class="button small" data-action="retry">Retry</button> <button class="button small" data-action="place">Place on map</button></div></div>`).join('');
-    els.unlocatedList.querySelectorAll('.unlocated-row').forEach(row=>row.addEventListener('click',async e=>{
-      const btn=e.target.closest('button'); if (!btn) return; const p=state.permits.find(x=>x.id===row.dataset.id); if (!p) return;
-      if (btn.dataset.action==='retry') { const ok=await locatePermit(p,true,false); saveState(); renderAll(); renderUnlocatedList(); if (ok) map.setView([p.lat,p.lng],17); }
-      else if (btn.dataset.action==='place') { manualPlacePermitId=p.id; els.unlocatedDialog.close(); toast(`Click the correct map location for ${displayAddress(p)}.`); }
-    }));
-  }
-
-  function filteredPermits() {
-    const search=normalizeMatch(els.searchFilter.value); const statuses=new Set([...els.statusFilters.querySelectorAll('input:checked')].map(i=>i.dataset.status));
-    const workType=els.workTypeFilter.value, contractor=els.contractorFilter.value, from=els.dateFrom.value, to=els.dateTo.value;
-    return state.permits.filter(p=>{
-      if (!statuses.has(p.status)) return false; if (els.hideClosedFilter.checked&&p.status==='Closed') return false; if (els.hideArchivedFilter.checked&&p.archived) return false;
-      if (workType&&p.workType!==workType) return false; if (contractor&&p.contractor!==contractor) return false;
-      if (search) { const hay=normalizeMatch([p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.rowImpact,p.notes,p.sourceFilename].join(' ')); if (!hay.includes(search)) return false; }
-      if ((from||to)&&!dateRangeIntersects(p.startDate,p.endDate,from,to)) return false;
-      if (els.corridorOnlyFilter.checked&&!permitNearAnyCorridor(p)) return false; if (els.venueOnlyFilter.checked&&!permitNearAnyVenue(p)) return false;
-      return true;
-    });
-  }
-
-  async function ensureConeZonesLoaded() {
-    if (coneZonesLoaded) return true;
-    if (coneZonesLoading) return coneZonesLoading;
-    setConeZonesStatus('Loading current City Cone Zones…');
-    coneZonesLoading = loadConeZonesFromOfficialExperience();
-    try {
-      const count = await coneZonesLoading;
-      coneZonesLoaded = true;
-      coneZonesFeatureCount = count;
-      setConeZonesStatus(`<strong>${count}</strong> current Cone Zones feature${count===1?'':'s'} loaded from the City map.`);
-      if (els.layerConeZones.checked) toggleLayer(coneZonesLayer,true);
-      return true;
-    } catch (err) {
-      console.warn('Cone Zones load failed', err);
-      coneZonesLayer.clearLayers();
-      coneZonesLoaded = false;
-      const msg = escapeHtml(err?.message || 'Public Cone Zones data could not be loaded.');
-      setConeZonesStatus(`Cone Zones unavailable right now. ${msg}`, true);
-      toast('Cone Zones could not be loaded from the City public map. Your permit data is unaffected.');
-      return false;
-    } finally {
-      coneZonesLoading = null;
-    }
-  }
-
-  function setConeZonesStatus(html, isError=false) {
-    if (!els.coneZonesStatus) return;
-    els.coneZonesStatus.hidden = false;
-    els.coneZonesStatus.classList.toggle('error', !!isError);
-    els.coneZonesStatus.innerHTML = html;
-  }
-
-  async function loadConeZonesFromOfficialExperience() {
-    coneZonesLayer.clearLayers();
-    const experienceData = await arcgisItemData(CONE_ZONES_EXPERIENCE_ID);
-    const ids = collectArcGisItemIds(experienceData);
-    if (!ids.length) throw new Error('The public Cone Zones app did not expose a map item.');
-
-    const metadataResults = await Promise.all(ids.slice(0,80).map(async id => {
-      try { return await arcgisItemInfo(id); } catch { return null; }
-    }));
-    let webMaps = metadataResults.filter(item => item && item.type === 'Web Map');
-    if (!webMaps.length) {
-      const nestedIds = new Set();
-      for (const item of metadataResults.filter(Boolean).slice(0,24)) {
-        try { collectArcGisItemIds(await arcgisItemData(item.id)).forEach(id => nestedIds.add(id)); } catch {}
-      }
-      const nestedMetadata = await Promise.all([...nestedIds].slice(0,80).map(async id => {
-        try { return await arcgisItemInfo(id); } catch { return null; }
-      }));
-      webMaps = nestedMetadata.filter(item => item && item.type === 'Web Map');
-    }
-    if (!webMaps.length) throw new Error('The public Cone Zones web map could not be discovered.');
-
-    webMaps = webMaps.sort((a,b) => coneMapScore(b)-coneMapScore(a));
-    const bestScore = coneMapScore(webMaps[0]);
-    const selected = bestScore > 0 ? webMaps.filter(m => coneMapScore(m) === bestScore) : [webMaps[0]];
-
-    let added = 0;
-    for (const webMap of selected.slice(0,2)) {
-      const data = await arcgisItemData(webMap.id);
-      const leaves = flattenArcGisOperationalLayers(data?.operationalLayers || []);
-      const relevant = leaves.filter(isConeZonesOperationalLayer);
-      const toLoad = relevant.length ? relevant : leaves.filter(l => !/camera|city limit|basemap/i.test(l.title || ''));
-      for (const descriptor of toLoad) {
-        try { added += await addConeZonesDescriptor(descriptor); }
-        catch (err) { console.warn('Cone Zones layer skipped', descriptor.title, err); }
-      }
-    }
-    if (!added) throw new Error('The City map loaded, but no public construction geometry was returned.');
-    return added;
-  }
-
-  function coneMapScore(item) {
-    const text = `${item?.title || ''} ${(item?.tags || []).join(' ')} ${item?.snippet || ''}`.toLowerCase();
-    let score = 0;
-    if (text.includes('cone')) score += 50;
-    if (text.includes('construction')) score += 20;
-    if (text.includes('travel')) score += 15;
-    if (text.includes('impact')) score += 15;
-    if (text.includes('boulder')) score += 5;
-    return score;
-  }
-
-  function collectArcGisItemIds(root) {
-    const ids = new Set();
-    const visit = value => {
-      if (!value) return;
-      if (Array.isArray(value)) { value.forEach(visit); return; }
-      if (typeof value !== 'object') return;
-      for (const [key,val] of Object.entries(value)) {
-        const k = key.toLowerCase();
-        const itemKey = k.includes('itemid') || k.includes('portalitem') || k.includes('webmap');
-        if (itemKey && typeof val === 'string' && /^(?:[a-f0-9]{32})$/i.test(val)) ids.add(val);
-        else if (itemKey && Array.isArray(val)) for (const entry of val) if (typeof entry === 'string' && /^(?:[a-f0-9]{32})$/i.test(entry)) ids.add(entry);
-        visit(val);
+      const hrs = durationHours(start, end);
+      const serviceAmount = billingEl.value === 'fixed' ? rate : hrs * rate;
+      const mileage = readMileageForm();
+      const mileageAmount = mileage.miles * mileage.rate;
+      const overnightText = isOvernight(start, end) && dateValue ? ` · ends ${shortDate(shiftEndDate(dateValue, start, end))}` : '';
+      document.getElementById('blockDuration').textContent = `${hours(hrs)} hrs tracked${overnightText}`;
+      document.getElementById('blockAmount').textContent = money(serviceAmount + mileageAmount);
+      const mileagePreview = document.getElementById('mileagePreview');
+      if (mileage.mode !== 'none') {
+        const odoText = mileage.mode === 'odometer' && mileage.valid ? ` · ${hours(mileage.odometerStart)} → ${hours(mileage.odometerEnd)}` : '';
+        mileagePreview.style.display = 'flex';
+        mileagePreview.innerHTML = `<span>Mileage${odoText}</span><strong>${hours(mileage.miles)} mi × ${money(mileage.rate)} = ${money(mileageAmount)}</strong>`;
+      } else {
+        mileagePreview.style.display = 'none';
+        mileagePreview.innerHTML = '';
       }
     };
-    visit(root);
-    return [...ids];
-  }
 
-  async function arcgisItemInfo(id) {
-    const res = await fetch(`${ARCGIS_ITEMS_ROOT}/${encodeURIComponent(id)}?f=json`);
-    if (!res.ok) throw new Error(`ArcGIS item ${res.status}`);
-    const json = await res.json();
-    if (json?.error) throw new Error(json.error.message || 'ArcGIS item error');
-    return json;
-  }
-
-  async function arcgisItemData(id) {
-    const res = await fetch(`${ARCGIS_ITEMS_ROOT}/${encodeURIComponent(id)}/data?f=json`);
-    if (!res.ok) throw new Error(`ArcGIS data ${res.status}`);
-    const json = await res.json();
-    if (json?.error) throw new Error(json.error.message || 'ArcGIS data error');
-    return json;
-  }
-
-  function flattenArcGisOperationalLayers(layers, parentTitle='') {
-    const out = [];
-    for (const layer of layers || []) {
-      const title = [parentTitle, layer?.title || layer?.name || ''].filter(Boolean).join(' — ');
-      if (Array.isArray(layer?.layers) && layer.layers.length) {
-        if (layer.url) {
-          for (const sub of layer.layers) {
-            out.push({ ...sub, title:[title,sub.title || sub.name || `Layer ${sub.id}`].filter(Boolean).join(' — '), url:sub.url || `${layer.url.replace(/\/$/,'')}/${sub.id}` });
-          }
-        } else {
-          out.push(...flattenArcGisOperationalLayers(layer.layers, title));
-        }
-        continue;
+    serviceEl.onchange = () => {
+      const isCustom = serviceEl.value === 'custom';
+      customField.style.display = isCustom ? 'flex' : 'none';
+      if (!isCustom) {
+        const service = getService(serviceEl.value);
+        rateEl.value = service?.rate ?? '';
+        billingEl.value = service?.billingType === 'fixed' ? 'fixed' : 'hourly';
+        updateRateLabel();
       }
-      out.push({ ...layer, title });
+      updatePreview();
+    };
+    billingEl.onchange = () => { updateRateLabel(); updatePreview(); };
+    mileageModeEl.onchange = updateMileageFields;
+    ['blockDate','blockStart','blockEnd','blockRate','mileageMiles','mileageRateManual','mileageStart','mileageEnd','mileageRateOdometer'].forEach(key => document.getElementById(key).addEventListener('input', updatePreview));
+    updateMileageFields();
+    document.getElementById('cancelBlock').onclick = closeModal;
+
+    document.getElementById('saveBlock').onclick = async () => {
+      const clientIdValue = document.getElementById('blockClient').value;
+      const dateValue = document.getElementById('blockDate').value;
+      const start = document.getElementById('blockStart').value;
+      const end = document.getElementById('blockEnd').value;
+      const serviceIdValue = serviceEl.value === 'custom' ? '' : serviceEl.value;
+      const serviceSelectionUnchanged = Boolean(existing && serviceEl.value === initialServiceValue && serviceIdValue === (existing.serviceId || ''));
+      const serviceName = serviceSelectionUnchanged
+        ? existing.serviceName
+        : (serviceIdValue ? getService(serviceIdValue)?.name : document.getElementById('customService').value.trim());
+      const billingType = billingEl.value === 'fixed' ? 'fixed' : 'hourly';
+      const rateRaw = rateEl.value;
+      const rate = Number(rateRaw);
+      const mileageMode = mileageModeEl.value;
+      const mileage = readMileageForm();
+      const mileageRateRaw = mileageMode === 'manual' ? document.getElementById('mileageRateManual').value : mileageMode === 'odometer' ? document.getElementById('mileageRateOdometer').value : '';
+      const mileageMilesRaw = mileageMode === 'manual' ? document.getElementById('mileageMiles').value : '';
+      const mileageStartRaw = mileageMode === 'odometer' ? document.getElementById('mileageStart').value : '';
+      const mileageEndRaw = mileageMode === 'odometer' ? document.getElementById('mileageEnd').value : '';
+      const notes = document.getElementById('blockNotes').value.trim();
+      const status = linkedInvoice ? existingStatus : document.getElementById('blockStatus').value;
+      const error = document.getElementById('blockError');
+      error.classList.remove('show');
+
+      if (!clientIdValue || !dateValue || !start || !end || !serviceName || rateRaw === '' || !Number.isFinite(rate) || rate < 0) {
+        error.textContent = 'Client, date, start/end time, service, and a valid billing amount are required.';
+        error.classList.add('show'); return;
+      }
+      if (timeToMinutes(end) === timeToMinutes(start)) {
+        error.textContent = 'Start and end time cannot be the same. For an overnight shift, choose an end time earlier than the start time.'; error.classList.add('show'); return;
+      }
+      if (mileageMode === 'manual' && (mileageMilesRaw === '' || mileageRateRaw === '' || !Number.isFinite(Number(mileageMilesRaw)) || Number(mileageMilesRaw) < 0 || !Number.isFinite(Number(mileageRateRaw)) || Number(mileageRateRaw) < 0)) {
+        error.textContent = 'Enter valid miles and a valid rate per mile, or choose No mileage.'; error.classList.add('show'); return;
+      }
+      if (mileageMode === 'odometer' && (mileageStartRaw === '' || mileageEndRaw === '' || mileageRateRaw === '' || !Number.isFinite(Number(mileageStartRaw)) || !Number.isFinite(Number(mileageEndRaw)) || Number(mileageStartRaw) < 0 || Number(mileageEndRaw) < Number(mileageStartRaw) || !Number.isFinite(Number(mileageRateRaw)) || Number(mileageRateRaw) < 0)) {
+        error.textContent = 'Starting mileage, ending mileage, and rate per mile must be valid. Ending mileage cannot be lower than starting mileage.'; error.classList.add('show'); return;
+      }
+      const conflict = state.entries.find(e => e.id !== existing?.id && e.clientId === clientIdValue && overlaps(dateValue, start, end, e.date, e.start, e.end));
+      if (conflict) {
+        error.textContent = `This overlaps the existing ${shiftTimeLabel(conflict.date, conflict.start, conflict.end, true)} block for this client.`;
+        error.classList.add('show'); return;
+      }
+
+      const payload = {
+        id: existing?.id || id(),
+        clientId: clientIdValue,
+        date: dateValue,
+        start,
+        end,
+        serviceId: serviceIdValue,
+        serviceName,
+        billingType,
+        rate,
+        mileageMode: ['manual','odometer'].includes(mileageMode) ? mileageMode : 'none',
+        mileageStart: mileageMode === 'odometer' ? Number(mileageStartRaw) : null,
+        mileageEnd: mileageMode === 'odometer' ? Number(mileageEndRaw) : null,
+        mileageMiles: mileageMode === 'manual' ? Number(mileageMilesRaw) : 0,
+        mileageRate: mileageMode === 'none' ? 0 : Number(mileageRateRaw),
+        status: ['unbilled','invoiced','paid'].includes(status) ? status : 'unbilled',
+        notes,
+        createdAt: existing?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      if (existing) Object.assign(existing, payload); else state.entries.push(payload);
+      ui.selectedClientId = clientIdValue;
+      ui.selectedDate = dateValue;
+      await persist(); closeModal(true); toast(existing ? 'Work block updated' : 'Work block saved'); render();
+    };
+  }
+
+  function addDaysISO(iso, days) {
+    const [y,m,d] = iso.split('-').map(Number);
+    const date = new Date(y, m - 1, d);
+    date.setDate(date.getDate() + days);
+    return localISO(date);
+  }
+
+  function suggestedInvoiceNumber() {
+    const prefix = String(state.settings.invoicePrefix || 'INV').trim().toUpperCase() || 'INV';
+    return `${prefix}-${String(state.settings.nextInvoiceNumber || 1).padStart(4, '0')}`;
+  }
+
+  function openInvoiceModal() {
+    const client = ui.exportClientId === 'all' ? null : getClient(ui.exportClientId);
+    const list = invoiceCandidateEntries();
+    if (!client || !list.length) return;
+    if (!String(state.settings.businessName || '').trim()) { openSettingsModal(); return; }
+    const baseTotals = totals(list);
+    const issueDate = todayISO();
+    const dueDate = addDaysISO(issueDate, 14);
+    const suggested = suggestedInvoiceNumber();
+    const defaultTax = Number(state.settings.defaultTaxRate || 0);
+
+    openModal('Create invoice', `
+      <div class="invoice-modal-summary">
+        <strong>${esc(client.name)}</strong>
+        <span>${list.length} unbilled blocks · ${hours(baseTotals.hours)} hrs${baseTotals.mileageMiles ? ` · ${hours(baseTotals.mileageMiles)} mi` : ''} · ${money(baseTotals.amount)}</span>
+      </div>
+      <div class="control-grid">
+        <div class="field"><label for="invoiceNumber">Invoice number</label><input id="invoiceNumber" value="${esc(suggested)}" /></div>
+        <div class="field"><label for="invoiceTax">Tax rate (%)</label><input id="invoiceTax" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(defaultTax)}" /></div>
+        <div class="field"><label for="invoiceIssue">Issue date</label><input id="invoiceIssue" type="date" value="${esc(issueDate)}" /></div>
+        <div class="field"><label for="invoiceDue">Due date</label><input id="invoiceDue" type="date" value="${esc(dueDate)}" /></div>
+        <div class="field full"><label for="invoiceNotes">Invoice notes <span class="optional">optional</span></label><textarea id="invoiceNotes" placeholder="Payment terms, thank-you note, or other invoice note"></textarea></div>
+      </div>
+      <div class="invoice-calc">
+        <div><span>Subtotal</span><strong>${money(baseTotals.amount)}</strong></div>
+        <div><span id="invoiceTaxLabel">Tax (${defaultTax}%)</span><strong id="invoiceTaxAmount">${money(baseTotals.amount * defaultTax / 100)}</strong></div>
+        <div class="invoice-calc-total"><span>Total</span><strong id="invoiceTotal">${money(baseTotals.amount * (1 + defaultTax / 100))}</strong></div>
+      </div>
+      <div class="form-error" id="invoiceError"></div>
+      <div class="modal-actions"><button class="btn secondary" id="cancelInvoice" type="button">Cancel</button><button class="btn primary" id="saveInvoice" type="button">Create invoice</button></div>
+    `);
+
+    const taxEl = document.getElementById('invoiceTax');
+    const updateInvoicePreview = () => {
+      const taxRate = Math.max(0, Number(taxEl.value || 0));
+      const taxAmount = baseTotals.amount * taxRate / 100;
+      document.getElementById('invoiceTaxLabel').textContent = `Tax (${taxRate.toFixed(2).replace(/\.00$/, '')}%)`;
+      document.getElementById('invoiceTaxAmount').textContent = money(taxAmount);
+      document.getElementById('invoiceTotal').textContent = money(baseTotals.amount + taxAmount);
+    };
+    taxEl.addEventListener('input', updateInvoicePreview);
+    document.getElementById('cancelInvoice').onclick = closeModal;
+    document.getElementById('saveInvoice').onclick = async () => {
+      const number = document.getElementById('invoiceNumber').value.trim();
+      const issue = document.getElementById('invoiceIssue').value;
+      const due = document.getElementById('invoiceDue').value;
+      const taxRaw = document.getElementById('invoiceTax').value;
+      const taxRate = Number(taxRaw);
+      const notes = document.getElementById('invoiceNotes').value.trim();
+      const error = document.getElementById('invoiceError');
+      error.classList.remove('show');
+      if (!number || !issue || !due || !Number.isFinite(taxRate) || taxRate < 0) {
+        error.textContent = 'Invoice number, issue/due dates, and a valid tax rate are required.'; error.classList.add('show'); return;
+      }
+      if (due < issue) {
+        error.textContent = 'Due date cannot be earlier than the issue date.'; error.classList.add('show'); return;
+      }
+      if (state.invoices.some(inv => String(inv.number).toLowerCase() === number.toLowerCase())) {
+        error.textContent = 'That invoice number is already in use.'; error.classList.add('show'); return;
+      }
+
+      const freshList = invoiceCandidateEntries();
+      if (!freshList.length) {
+        error.textContent = 'There is no longer any unbilled work in this period.'; error.classList.add('show'); return;
+      }
+      const subtotal = totals(freshList).amount;
+      const taxAmount = subtotal * taxRate / 100;
+      const invoice = {
+        id: id(),
+        number,
+        clientId: client.id,
+        clientSnapshot: { name: client.name, email: client.email || '', billingAddress: client.billingAddress || '', details: client.details || '' },
+        businessSnapshot: {
+          name: state.settings.businessName || '',
+          email: state.settings.businessEmail || '',
+          phone: state.settings.businessPhone || '',
+          address: state.settings.businessAddress || ''
+        },
+        issueDate: issue,
+        dueDate: due,
+        taxRate,
+        subtotal: Number(subtotal.toFixed(2)),
+        taxAmount: Number(taxAmount.toFixed(2)),
+        total: Number((subtotal + taxAmount).toFixed(2)),
+        currency: currencyCode(),
+        notes,
+        status: 'issued',
+        entryIds: freshList.map(e => e.id),
+        lines: freshList.map(e => {
+          const x = calcEntry(e);
+          return {
+            entryId: e.id,
+            date: e.date,
+            endDate: shiftEndDate(e.date, e.start, e.end),
+            start: e.start,
+            end: e.end,
+            serviceName: e.serviceName || '',
+            billingType: e.billingType || 'hourly',
+            hours: Number(x.hrs.toFixed(4)),
+            rate: Number(e.rate || 0),
+            serviceAmount: Number(x.serviceAmount.toFixed(2)),
+            mileageMode: x.mileage.mode,
+            mileageStart: x.mileage.mode === 'odometer' ? Number(e.mileageStart) : null,
+            mileageEnd: x.mileage.mode === 'odometer' ? Number(e.mileageEnd) : null,
+            mileageMiles: Number(x.mileage.miles.toFixed(4)),
+            mileageRate: Number(x.mileage.rate.toFixed(4)),
+            mileageAmount: Number(x.mileage.amount.toFixed(2)),
+            amount: Number(x.amount.toFixed(2)),
+            notes: e.notes || ''
+          };
+        }),
+        createdAt: new Date().toISOString()
+      };
+      freshList.forEach(e => { e.status = 'invoiced'; e.updatedAt = new Date().toISOString(); });
+      state.invoices.push(invoice);
+      state.settings.nextInvoiceNumber = Math.max(1, Number(state.settings.nextInvoiceNumber || 1) + 1);
+      await persist();
+      closeModal(true);
+      toast(`${number} created`);
+      renderExport();
+    };
+  }
+
+  function printInvoice(invoiceId) {
+    const inv = state.invoices.find(x => x.id === invoiceId);
+    if (!inv) return;
+    const client = inv.clientSnapshot || {};
+    const business = inv.businessSnapshot || {};
+    const lines = Array.isArray(inv.lines) ? inv.lines : [];
+    const win = window.open('', '_blank');
+    if (!win) { alert('Invox could not open the invoice preview. Allow pop-ups for this site and try again.'); return; }
+    const lineRows = lines.map(line => {
+      const inferredEndDate = line.endDate || shiftEndDate(line.date, line.start, line.end);
+      const dateText = inferredEndDate !== line.date ? `${line.date} → ${inferredEndDate}` : line.date;
+      const time = line.start && line.end ? `${displayTime(line.start)}–${displayTime(line.end)}${inferredEndDate !== line.date ? ' (next day)' : ''}` : '';
+      const billing = line.billingType === 'fixed' ? `${moneyIn(line.rate, inv.currency)} fixed` : `${hours(line.hours)} hrs × ${moneyIn(line.rate, inv.currency)}`;
+      const mileageMiles = Math.max(0, Number(line.mileageMiles || 0));
+      const mileageRate = Math.max(0, Number(line.mileageRate || 0));
+      const mileageAmount = Number.isFinite(Number(line.mileageAmount)) ? Number(line.mileageAmount) : mileageMiles * mileageRate;
+      const mileage = mileageMiles > 0 ? `<div class="muted mileage-line">Mileage: ${esc(hours(mileageMiles))} mi × ${esc(moneyIn(mileageRate, inv.currency))} = ${esc(moneyIn(mileageAmount, inv.currency))}</div>` : '';
+      return `<tr><td>${esc(dateText)}<div class="muted">${esc(time)}</div></td><td><strong>${esc(line.serviceName)}</strong>${line.notes ? `<div class="muted notes">${esc(line.notes)}</div>` : ''}</td><td>${esc(billing)}${mileage}</td><td class="num">${esc(moneyIn(line.amount, inv.currency))}</td></tr>`;
+    }).join('');
+    const invoiceMileageAmount = lines.reduce((sum, line) => {
+      if (Number.isFinite(Number(line.mileageAmount))) return sum + Number(line.mileageAmount);
+      return sum + Math.max(0, Number(line.mileageMiles || 0)) * Math.max(0, Number(line.mileageRate || 0));
+    }, 0);
+    const invoiceServiceAmount = Math.max(0, Number(inv.subtotal || 0) - invoiceMileageAmount);
+    const mileageSummary = invoiceMileageAmount > 0 ? `<div class="sum"><span>Services</span><strong>${esc(moneyIn(invoiceServiceAmount, inv.currency))}</strong></div><div class="sum"><span>Mileage</span><strong>${esc(moneyIn(invoiceMileageAmount, inv.currency))}</strong></div>` : '';
+    const taxRow = Number(inv.taxAmount || 0) ? `<div class="sum"><span>Tax (${Number(inv.taxRate || 0).toFixed(2).replace(/\.00$/,'')}%)</span><strong>${esc(moneyIn(inv.taxAmount, inv.currency))}</strong></div>` : '';
+    win.document.open();
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(inv.number)} — Invox</title><style>
+      *{box-sizing:border-box} body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#17232e;margin:0;background:#fff} .page{max-width:850px;margin:0 auto;padding:48px} .top{display:flex;justify-content:space-between;gap:30px;border-bottom:3px solid #173a5e;padding-bottom:26px}.brand{font-size:30px;font-weight:800;color:#173a5e}.invoice-title{text-align:right}.invoice-title h1{margin:0;font-size:28px}.muted{color:#687785;font-size:12px;line-height:1.4}.parties{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin:30px 0}.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#687785;font-weight:800;margin-bottom:8px}.party strong{font-size:16px}.pre{white-space:pre-line;margin-top:4px;font-size:13px}.meta{display:grid;grid-template-columns:auto auto;gap:5px 18px;justify-content:end;margin-top:10px;font-size:13px}.meta span:nth-child(odd){color:#687785}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:13px}th{text-align:left;background:#f3f5f7;padding:10px;border-bottom:1px solid #ccd5dd}td{vertical-align:top;padding:12px 10px;border-bottom:1px solid #e1e6ea}.num{text-align:right;white-space:nowrap}.notes{margin-top:4px;max-width:360px}.mileage-line{margin-top:4px;color:#42596b}.totals{width:330px;margin:24px 0 0 auto}.sum{display:flex;justify-content:space-between;padding:7px 0}.sum.total{border-top:2px solid #173a5e;margin-top:5px;padding-top:12px;font-size:18px}.invoice-note{margin-top:34px;padding:16px;background:#f7f9fa;border-radius:8px;white-space:pre-line;font-size:13px}.status{display:inline-block;margin-top:12px;border:1px solid #c8d2da;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;text-transform:uppercase}.footer{margin-top:42px;color:#8a96a0;font-size:11px;text-align:center}@media print{.page{padding:18mm}.no-print{display:none}}@media(max-width:650px){.page{padding:24px}.top,.parties{display:block}.invoice-title{text-align:left;margin-top:24px}.meta{justify-content:start}.parties .party+ .party{margin-top:24px}table{font-size:11px}.totals{width:100%}}
+    </style></head><body><div class="page">
+      <div class="top"><div><div class="brand">${esc(business.name || 'Invox')}</div><div class="pre muted">${esc(business.address || '')}</div><div class="muted">${esc([business.email,business.phone].filter(Boolean).join(' · '))}</div></div><div class="invoice-title"><h1>Invoice</h1><div class="status">${inv.status === 'paid' ? 'Paid' : 'Issued'}</div><div class="meta"><span>Invoice</span><strong>${esc(inv.number)}</strong><span>Issued</span><strong>${esc(inv.issueDate)}</strong><span>Due</span><strong>${esc(inv.dueDate)}</strong></div></div></div>
+      <div class="parties"><div class="party"><div class="label">Bill to</div><strong>${esc(client.name || '')}</strong><div class="pre">${esc(client.billingAddress || '')}</div><div class="muted">${esc(client.email || '')}</div></div><div></div></div>
+      <table><thead><tr><th>Date / Time</th><th>Service</th><th>Billing</th><th class="num">Amount</th></tr></thead><tbody>${lineRows}</tbody></table>
+      <div class="totals">${mileageSummary}<div class="sum"><span>Subtotal</span><strong>${esc(moneyIn(inv.subtotal, inv.currency))}</strong></div>${taxRow}<div class="sum total"><span>Total</span><strong>${esc(moneyIn(inv.total, inv.currency))}</strong></div></div>
+      ${inv.notes ? `<div class="invoice-note"><div class="label">Notes</div>${esc(inv.notes)}</div>` : ''}
+      <div class="footer">Created with Invox</div>
+    </div><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));<\/script></body></html>`);
+    win.document.close();
+  }
+
+  async function markInvoicePaid(invoiceId) {
+    const inv = state.invoices.find(x => x.id === invoiceId);
+    if (!inv || inv.status === 'paid') return;
+    inv.status = 'paid';
+    inv.paidAt = new Date().toISOString();
+    (inv.entryIds || []).forEach(entryId => {
+      const entry = state.entries.find(e => e.id === entryId);
+      if (entry) { entry.status = 'paid'; entry.updatedAt = new Date().toISOString(); }
+    });
+    await persist();
+    toast(`${inv.number} marked paid`);
+    renderExport();
+  }
+
+  function openSettingsModal() {
+    const x = state.settings;
+    openModal('Business settings', `
+      <div class="control-grid">
+        <div class="field full"><label for="businessName">Business / provider name</label><input id="businessName" value="${esc(x.businessName || '')}" placeholder="Your business or professional name" /></div>
+        <div class="field"><label for="businessEmail">Email <span class="optional">optional</span></label><input id="businessEmail" type="email" value="${esc(x.businessEmail || '')}" /></div>
+        <div class="field"><label for="businessPhone">Phone <span class="optional">optional</span></label><input id="businessPhone" type="tel" value="${esc(x.businessPhone || '')}" /></div>
+        <div class="field full"><label for="businessAddress">Business address <span class="optional">optional</span></label><textarea id="businessAddress" placeholder="Address displayed on invoices">${esc(x.businessAddress || '')}</textarea></div>
+        <div class="field"><label for="businessCurrency">Currency</label><select id="businessCurrency">${['USD','EUR','GBP','CAD','AUD','CHF','SEK','NOK','DKK'].map(c => `<option value="${c}" ${currencyCode() === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+        <div class="field"><label for="businessTax">Default tax rate (%)</label><input id="businessTax" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(x.defaultTaxRate ?? 0)}" /></div>
+        <div class="field"><label for="businessMileageRate">Default mileage rate / mile</label><input id="businessMileageRate" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(x.defaultMileageRate ?? 0)}" /></div>
+        <div class="field"><label for="invoicePrefix">Invoice prefix</label><input id="invoicePrefix" maxlength="10" value="${esc(x.invoicePrefix || 'INV')}" /></div>
+        <div class="field"><label for="invoiceNext">Next invoice number</label><input id="invoiceNext" type="number" min="1" step="1" inputmode="numeric" value="${esc(x.nextInvoiceNumber || 1)}" /></div>
+      </div>
+      <div class="warning" style="margin-top:12px">Changing currency changes how existing work logs are displayed; Invox does not perform currency conversion. Saved invoices retain the currency they were created in.</div>
+      <div class="form-error" id="settingsError"></div>
+      <div class="modal-actions"><button class="btn secondary" id="cancelSettings" type="button">Cancel</button><button class="btn primary" id="saveSettings" type="button">Save settings</button></div>
+    `);
+    document.getElementById('cancelSettings').onclick = closeModal;
+    document.getElementById('saveSettings').onclick = async () => {
+      const businessName = document.getElementById('businessName').value.trim();
+      const defaultTaxRate = Number(document.getElementById('businessTax').value);
+      const defaultMileageRate = Number(document.getElementById('businessMileageRate').value);
+      const nextInvoiceNumber = parseInt(document.getElementById('invoiceNext').value, 10);
+      const invoicePrefix = document.getElementById('invoicePrefix').value.trim().toUpperCase().replace(/[^A-Z0-9-]/g,'');
+      const error = document.getElementById('settingsError');
+      if (!businessName || !Number.isFinite(defaultTaxRate) || defaultTaxRate < 0 || !Number.isFinite(defaultMileageRate) || defaultMileageRate < 0 || !Number.isInteger(nextInvoiceNumber) || nextInvoiceNumber < 1 || !invoicePrefix) {
+        error.textContent = 'Business name, tax rate, mileage rate, invoice prefix, and next invoice number must be valid.'; error.classList.add('show'); return;
+      }
+      state.settings = {
+        ...state.settings,
+        businessName,
+        businessEmail: document.getElementById('businessEmail').value.trim(),
+        businessPhone: document.getElementById('businessPhone').value.trim(),
+        businessAddress: document.getElementById('businessAddress').value.trim(),
+        currency: document.getElementById('businessCurrency').value,
+        defaultTaxRate,
+        defaultMileageRate,
+        invoicePrefix,
+        nextInvoiceNumber
+      };
+      await persist(); closeModal(true); toast('Business settings saved'); render();
+    };
+  }
+
+  function saveBackup() {
+    const payload = {
+      app: 'Invox',
+      backupVersion: 3,
+      exportedAt: new Date().toISOString(),
+      data: state
+    };
+    downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `invox-backup-${todayISO()}.json`);
+    toast('Backup created');
+  }
+
+  async function restoreBackup(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const data = parsed.data || parsed;
+      if (!data || !Array.isArray(data.clients) || !Array.isArray(data.services) || !Array.isArray(data.entries)) throw new Error('Invalid backup');
+      if (!confirm(`Restore this backup? It contains ${data.clients.length} clients, ${data.entries.length} work blocks, and ${Array.isArray(data.invoices) ? data.invoices.length : 0} invoices and will replace the data currently on this device.`)) return;
+      state = normalizeState(data);
+      ui.selectedClientId = state.clients[0]?.id || '';
+      ui.clientDetailId = '';
+      await persist();
+      toast('Backup restored');
+      render();
+    } catch (err) {
+      alert('That file is not a valid Invox backup.');
+    } finally {
+      event.target.value = '';
     }
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ---- Minimal dependency-free XLSX writer (ZIP Store + SpreadsheetML) ----
+  const te = new TextEncoder();
+
+  function xmlEsc(s) {
+    return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');
+  }
+
+  function colName(index) {
+    let n = index + 1, out = '';
+    while (n) { n--; out = String.fromCharCode(65 + (n % 26)) + out; n = Math.floor(n / 26); }
     return out;
   }
 
-  function isConeZonesOperationalLayer(layer) {
-    const text = `${layer?.title || ''} ${layer?.url || ''}`.toLowerCase();
-    if (/camera|city limit|basemap|reference|boundary/.test(text)) return false;
-    return /cone|construction|project|closure|detour|delay|impact|work zone|event|maintenance|outage/.test(text);
+  function cellXML(value, r, c) {
+    const ref = `${colName(c)}${r + 1}`;
+    const style = r === 0 ? ' s="1"' : '';
+    if (typeof value === 'number' && Number.isFinite(value)) return `<c r="${ref}"${style} t="n"><v>${value}</v></c>`;
+    const str = xmlEsc(value == null ? '' : value);
+    return `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${str}</t></is></c>`;
   }
 
-  async function addConeZonesDescriptor(descriptor) {
-    if (descriptor.featureCollection?.layers?.length) {
-      let count = 0;
-      for (const fc of descriptor.featureCollection.layers) {
-        const features = fc?.featureSet?.features || [];
-        const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
-        const popupConfig = buildConePopupConfig(
-          fc?.popupInfo || descriptor?.popupInfo,
-          { fields:fc?.layerDefinition?.fields || [], displayField:fc?.layerDefinition?.displayField },
-          descriptor.title || fc?.layerDefinition?.name || 'Cone Zones'
-        );
-        count += addConeZonesGeoJson(converted, descriptor.title || fc?.layerDefinition?.name || 'Cone Zones', popupConfig);
-      }
-      return count;
-    }
-    if (!descriptor.url && descriptor.itemId) {
-      const item = await arcgisItemInfo(descriptor.itemId);
-      if (item?.url) descriptor = { ...descriptor, url:item.url };
-      else {
-        const itemData = await arcgisItemData(descriptor.itemId);
-        const embedded = itemData?.layers || itemData?.featureCollection?.layers || [];
-        let count = 0;
-        for (const fc of embedded) {
-          const features = fc?.featureSet?.features || [];
-          const converted = esriFeaturesToGeoJson(features, fc?.featureSet?.geometryType || fc?.layerDefinition?.geometryType);
-          const popupConfig = buildConePopupConfig(
-            fc?.popupInfo || descriptor?.popupInfo,
-            { fields:fc?.layerDefinition?.fields || [], displayField:fc?.layerDefinition?.displayField },
-            descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones'
-          );
-          count += addConeZonesGeoJson(converted, descriptor.title || item.title || fc?.layerDefinition?.name || 'Cone Zones', popupConfig);
-        }
-        return count;
-      }
-    }
-    if (!descriptor.url) return 0;
-    const queryTargets = await resolveArcGisQueryTargets(descriptor);
-    let count = 0;
-    for (const target of queryTargets) {
-      const [geojson, meta] = await Promise.all([
-        queryArcGisGeoJson(target.url, target.where),
-        arcgisLayerInfo(target.url).catch(() => null)
-      ]);
-      const popupConfig = buildConePopupConfig(target.popupInfo || descriptor.popupInfo, meta, target.title || descriptor.title || 'Cone Zones');
-      count += addConeZonesGeoJson(geojson, target.title || descriptor.title || 'Cone Zones', popupConfig);
-    }
-    return count;
+  function worksheetXML(rows, widths = []) {
+    const colXml = widths.length ? `<cols>${widths.map((w,i) => `<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+    const rowXml = rows.map((row, r) => `<row r="${r+1}">${row.map((v,c) => cellXML(v,r,c)).join('')}</row>`).join('');
+    const maxCol = colName(Math.max(0, (rows[0]?.length || 1) - 1));
+    const maxRow = Math.max(1, rows.length);
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${colXml}<sheetData>${rowXml}</sheetData><autoFilter ref="A1:${maxCol}${maxRow}"/></worksheet>`;
   }
 
-  async function arcgisLayerInfo(url) {
-    const res = await fetch(`${url.replace(/\/$/,'')}?f=json`);
-    if (!res.ok) throw new Error(`Cone Zones layer metadata ${res.status}`);
-    const json = await res.json();
-    if (json?.error) throw new Error(json.error.message || 'Cone Zones layer metadata error');
-    return json;
-  }
-
-  async function resolveArcGisQueryTargets(descriptor) {
-    const url = descriptor.url.replace(/\/$/,'');
-    const where = descriptor?.layerDefinition?.definitionExpression || descriptor?.definitionExpression || '1=1';
-    if (/\/(?:FeatureServer|MapServer)\/\d+$/i.test(url)) {
-      return [{ url, title:descriptor.title, where, popupInfo:descriptor.popupInfo || null }];
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
     }
-    if (!/\/(?:FeatureServer|MapServer)$/i.test(url)) return [];
-    const res = await fetch(`${url}?f=json`);
-    if (!res.ok) throw new Error(`Cone Zones service ${res.status}`);
-    const meta = await res.json();
-    const configured = new Map((descriptor.layers || []).map(l => [Number(l.id), l]));
-    return (meta.layers || []).filter(l => !l.subLayerIds?.length).map(l => {
-      const cfg = configured.get(Number(l.id));
-      return {
-        url:`${url}/${l.id}`,
-        title:[descriptor.title,cfg?.title || l.name].filter(Boolean).join(' — '),
-        where:cfg?.layerDefinition?.definitionExpression || cfg?.definitionExpression || where,
-        popupInfo:cfg?.popupInfo || descriptor.popupInfo || null
-      };
-    });
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
   }
 
-  async function queryArcGisGeoJson(layerUrl, where='1=1') {
-    const all = { type:'FeatureCollection', features:[] };
+  function push16(arr, n) { arr.push(n & 255, (n >>> 8) & 255); }
+  function push32(arr, n) { arr.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255); }
+
+  function dosDateTime(date = new Date()) {
+    const year = Math.max(1980, date.getFullYear());
+    const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+    const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+    return { dosTime, dosDate };
+  }
+
+  function makeZip(files) {
+    const chunks = [];
+    const central = [];
     let offset = 0;
-    for (let page=0; page<6; page++) {
-      const params = new URLSearchParams({
-        where:where || '1=1', outFields:'*', returnGeometry:'true', outSR:'4326', f:'geojson',
-        resultOffset:String(offset), resultRecordCount:'2000'
-      });
-      const res = await fetch(`${layerUrl}/query?${params}`);
-      if (!res.ok) throw new Error(`Cone Zones query ${res.status}`);
-      const json = await res.json();
-      if (json?.error) throw new Error(json.error.message || 'Cone Zones query error');
-      const features = Array.isArray(json?.features) ? json.features : [];
-      all.features.push(...features);
-      if (features.length < 2000 || !json.exceededTransferLimit) break;
-      offset += features.length;
-    }
-    return all;
-  }
+    const { dosTime, dosDate } = dosDateTime();
 
-  function buildConePopupConfig(popupInfo, meta, layerTitle) {
-    const serviceFields = Array.isArray(meta?.fields) ? meta.fields : [];
-    const aliasMap = new Map(serviceFields.map(f => [String(f.name || '').toLowerCase(), f.alias || f.name]));
-    const officialFieldInfos = Array.isArray(popupInfo?.fieldInfos) ? popupInfo.fieldInfos : [];
-    const popupFieldElement = Array.isArray(popupInfo?.popupElements)
-      ? popupInfo.popupElements.find(el => el?.type === 'fields' && Array.isArray(el.fieldInfos))
-      : null;
-    const elementFieldInfos = popupFieldElement?.fieldInfos || [];
-    const fieldInfos = (elementFieldInfos.length ? elementFieldInfos : officialFieldInfos)
-      .filter(fi => fi && fi.visible !== false && fi.fieldName && !/^expression\//i.test(fi.fieldName));
-    const textElements = Array.isArray(popupInfo?.popupElements)
-      ? popupInfo.popupElements.filter(el => el?.type === 'text' && el.text).map(el => el.text)
-      : [];
-    return {
-      layerTitle,
-      titleTemplate:popupInfo?.title || '',
-      descriptionTemplate:popupInfo?.description || textElements.join('\n'),
-      fieldInfos,
-      aliasMap,
-      displayField:meta?.displayField || ''
-    };
-  }
+    files.forEach(file => {
+      const name = te.encode(file.name);
+      const data = typeof file.data === 'string' ? te.encode(file.data) : file.data;
+      const crc = crc32(data);
+      const local = [];
+      push32(local, 0x04034b50); push16(local, 20); push16(local, 0x0800); push16(local, 0);
+      push16(local, dosTime); push16(local, dosDate); push32(local, crc); push32(local, data.length); push32(local, data.length);
+      push16(local, name.length); push16(local, 0);
+      const localBytes = new Uint8Array([...local, ...name]);
+      chunks.push(localBytes, data);
 
-  function addConeZonesGeoJson(geojson, layerTitle, popupConfig={}) {
-    const features = Array.isArray(geojson?.features) ? geojson.features.filter(f => f?.geometry) : [];
-    if (!features.length) return 0;
-    const layer = L.geoJSON({ type:'FeatureCollection', features }, {
-      pane:'overlayPane',
-      style: feature => coneZoneStyle(feature),
-      pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius:6, color:'#fff', weight:2, fillColor:'#d66b24', fillOpacity:.95 }),
-      onEachFeature: (feature, leafletLayer) => leafletLayer.bindPopup(coneZonePopup(feature, layerTitle, popupConfig), { maxWidth:430, maxHeight:480, className:'cone-zone-popup' })
+      const cd = [];
+      push32(cd, 0x02014b50); push16(cd, 20); push16(cd, 20); push16(cd, 0x0800); push16(cd, 0);
+      push16(cd, dosTime); push16(cd, dosDate); push32(cd, crc); push32(cd, data.length); push32(cd, data.length);
+      push16(cd, name.length); push16(cd, 0); push16(cd, 0); push16(cd, 0); push16(cd, 0); push32(cd, 0); push32(cd, offset);
+      central.push(new Uint8Array([...cd, ...name]));
+      offset += localBytes.length + data.length;
     });
-    layer.addTo(coneZonesLayer);
-    return features.length;
+
+    const centralSize = central.reduce((n, x) => n + x.length, 0);
+    const end = [];
+    push32(end, 0x06054b50); push16(end, 0); push16(end, 0); push16(end, files.length); push16(end, files.length);
+    push32(end, centralSize); push32(end, offset); push16(end, 0);
+    return new Blob([...chunks, ...central, new Uint8Array(end)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  function coneZoneStyle(feature) {
-    const type = feature?.geometry?.type || '';
-    if (/Polygon/i.test(type)) return { color:'#c65d1d', weight:2, opacity:.9, fillColor:'#e39a54', fillOpacity:.16 };
-    return { color:'#d66b24', weight:4, opacity:.88 };
-  }
+  function buildXLSX(sheets) {
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s,i)=>`<sheet name="${xmlEsc(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="0"/><fonts count="2"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><sz val="11"/><name val="Aptos"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`;
 
-  function coneZonePopup(feature, layerTitle, popupConfig={}) {
-    const p = feature?.properties || {};
-    const officialTitle = fillArcGisTemplate(popupConfig.titleTemplate, p);
-    const displayFieldValue = popupConfig.displayField ? propertyValueCI(p, popupConfig.displayField) : '';
-    const title = cleanConeText(officialTitle) || displayFieldValue || firstProperty(p, [
-      'projectname','project_name','projecttitle','project_title','name','title','project','location','address','workdescription','work_description'
-    ]) || layerTitle || 'Cone Zones';
-
-    const rows = [];
-    const used = new Set();
-    const addRow = (label, key, value) => {
-      if (value===null || value===undefined || value==='') return;
-      const normalizedKey = String(key || '').toLowerCase();
-      if (normalizedKey && used.has(normalizedKey)) return;
-      if (normalizedKey) used.add(normalizedKey);
-      rows.push({ label, value });
-    };
-
-    // Prefer the City's own popup ordering and aliases when the web map supplies them.
-    for (const fi of popupConfig.fieldInfos || []) {
-      const value = propertyValueCI(p, fi.fieldName);
-      if (value===null || value===undefined || value==='') continue;
-      addRow(fi.label || popupConfig.aliasMap?.get(String(fi.fieldName).toLowerCase()) || friendlyFieldName(fi.fieldName), fi.fieldName, value);
-      if (rows.length >= 12) break;
-    }
-
-    // Then make sure operationally useful fields appear even if the official popup config is sparse.
-    const preferred = [
-      ['Impact',['impact','travelimpact','travel_impact','trafficimpact','traffic_impact','traveldelay','travel_delay']],
-      ['Work',['workdescription','work_description','description','details','summary','activity','work']],
-      ['Status',['status','projectstatus','project_status']],
-      ['Start',['startdate','start_date','begindate','begin_date','fromdate','datefrom']],
-      ['End',['enddate','end_date','completiondate','completion_date','todate','dateto']],
-      ['Location',['location','address','street','limits','projectlimits','project_limits']],
-      ['Contact',['contact','contactname','contact_name','projectmanager','project_manager']],
-      ['Agency',['agency','department','division','owner']]
+    const files = [
+      { name: '[Content_Types].xml', data: contentTypes },
+      { name: '_rels/.rels', data: rootRels },
+      { name: 'xl/workbook.xml', data: workbook },
+      { name: 'xl/_rels/workbook.xml.rels', data: workbookRels },
+      { name: 'xl/styles.xml', data: styles }
     ];
-    for (const [label, keys] of preferred) {
-      const hit = firstPropertyEntry(p, keys);
-      if (!hit) continue;
-      addRow(label, hit[0], hit[1]);
-      if (rows.length >= 12) break;
-    }
-
-    if (rows.length < 7) {
-      for (const [key,value] of Object.entries(p)) {
-        if (value===null || value==='' || isConeSystemField(key) || used.has(String(key).toLowerCase())) continue;
-        const label = popupConfig.aliasMap?.get(String(key).toLowerCase()) || friendlyFieldName(key);
-        addRow(label, key, value);
-        if (rows.length >= 12) break;
-      }
-    }
-
-    const officialDescription = cleanConeText(fillArcGisTemplate(popupConfig.descriptionTemplate, p));
-    const descriptionCandidate = officialDescription || firstProperty(p, [
-      'travelimpact','travel_impact','trafficimpact','traffic_impact','impact','description','details','summary','workdescription','work_description'
-    ]);
-    const detailText = descriptionCandidate ? formatConeValue(descriptionCandidate, 900) : '';
-
-    const urlHit = Object.entries(p).find(([key,value]) => !isConeSystemField(key) && isSafeHttpUrl(value));
-    const rowHtml = rows.map(({label,value}) => `<div class="popup-row"><span class="popup-label">${escapeHtml(label)}</span><div>${formatConeDisplay(value)}</div></div>`).join('');
-    const detailHtml = detailText && !rows.some(r => String(formatConeValue(r.value,900)) === String(detailText))
-      ? `<div class="cone-zone-details">${escapeHtml(detailText)}</div>` : '';
-    const linkHtml = urlHit ? `<a class="cone-zone-link" href="${escapeHtml(String(urlHit[1]))}" target="_blank" rel="noopener noreferrer">Open project information ↗</a>` : '';
-    const officialLink = `<a class="cone-zone-link" href="https://bouldercolorado.gov/city-boulder-cone-zones-map" target="_blank" rel="noopener noreferrer">Open official Cone Zones ↗</a>`;
-
-    return `<div class="cone-zone-layer-name">${escapeHtml(layerTitle || 'Cone Zones')}</div><div class="popup-title">${escapeHtml(formatConeValue(title,220))}</div>${detailHtml}${rowHtml}${linkHtml || officialLink}<div class="cone-zone-source">Live reference from City of Boulder Cone Zones</div>`;
+    sheets.forEach((s,i) => files.push({ name: `xl/worksheets/sheet${i+1}.xml`, data: worksheetXML(s.rows, s.widths) }));
+    return makeZip(files);
   }
 
-  function fillArcGisTemplate(template, props) {
-    if (!template || typeof template !== 'string') return '';
-    return template.replace(/\{([^{}]+)\}/g, (match, token) => {
-      if (/^expression\//i.test(token)) return '';
-      const value = propertyValueCI(props, token);
-      return value===null || value===undefined ? '' : formatConeValue(value,900);
+  function exportXLSX() {
+    const list = exportEntries();
+    if (!list.length) return;
+    const invoiceForEntry = entryId => state.invoices.find(inv => Array.isArray(inv.entryIds) && inv.entryIds.includes(entryId));
+    const detailRows = [['Client','Client Notes','Client Email','Start Date','End Date','Start','End','Service','Billing Method','Hours','Rate / Fixed Amount','Service Amount','Mileage Method','Starting Mileage','Ending Mileage','Miles','Rate / Mile','Mileage Amount','Total Amount','Status','Invoice','Block Notes']];
+    list.forEach(e => {
+      const c = getClient(e.clientId);
+      const x = calcEntry(e);
+      const inv = invoiceForEntry(e.id);
+      detailRows.push([
+        c?.name || '', c?.details || '', c?.email || '', e.date, shiftEndDate(e.date, e.start, e.end), displayTime(e.start), displayTime(e.end), e.serviceName || '',
+        (e.billingType || 'hourly') === 'fixed' ? 'Fixed' : 'Hourly', Number(x.hrs.toFixed(4)), Number(e.rate), Number(x.serviceAmount.toFixed(2)),
+        x.mileage.mode === 'odometer' ? 'Odometer' : x.mileage.mode === 'manual' ? 'Direct miles' : '',
+        x.mileage.mode === 'odometer' ? Number(e.mileageStart) : '', x.mileage.mode === 'odometer' ? Number(e.mileageEnd) : '',
+        x.mileage.miles ? Number(x.mileage.miles.toFixed(4)) : '', x.mileage.miles ? Number(x.mileage.rate.toFixed(4)) : '', x.mileage.miles ? Number(x.mileage.amount.toFixed(2)) : '',
+        Number(x.amount.toFixed(2)), statusLabel(e.status), inv?.number || '', e.notes || ''
+      ]);
     });
+
+    const dailyMap = new Map();
+    list.forEach(e => {
+      const c = getClient(e.clientId);
+      const key = `${e.clientId}|${e.date}`;
+      const x = calcEntry(e);
+      const cur = dailyMap.get(key) || { client: c?.name || '', date: e.date, hours: 0, serviceAmount: 0, mileageMiles: 0, mileageAmount: 0, amount: 0 };
+      cur.hours += x.hrs; cur.serviceAmount += x.serviceAmount; cur.mileageMiles += x.mileage.miles; cur.mileageAmount += x.mileage.amount; cur.amount += x.amount; dailyMap.set(key, cur);
+    });
+    const dailyRows = [['Client','Date','Hours','Service Amount','Miles','Mileage Amount','Total Amount'], ...[...dailyMap.values()].sort((a,b)=>`${a.client}|${a.date}`.localeCompare(`${b.client}|${b.date}`)).map(x => [x.client, x.date, Number(x.hours.toFixed(4)), Number(x.serviceAmount.toFixed(2)), Number(x.mileageMiles.toFixed(4)), Number(x.mileageAmount.toFixed(2)), Number(x.amount.toFixed(2))])];
+
+    const summaryMap = new Map();
+    list.forEach(e => {
+      const c = getClient(e.clientId);
+      const key = `${e.clientId}|${e.serviceName}|${e.billingType || 'hourly'}`;
+      const x = calcEntry(e);
+      const cur = summaryMap.get(key) || { client: c?.name || '', service: e.serviceName || '', billingType: e.billingType || 'hourly', hours: 0, serviceAmount: 0, mileageMiles: 0, mileageAmount: 0, amount: 0 };
+      cur.hours += x.hrs; cur.serviceAmount += x.serviceAmount; cur.mileageMiles += x.mileage.miles; cur.mileageAmount += x.mileage.amount; cur.amount += x.amount; summaryMap.set(key, cur);
+    });
+    const summaryRows = [['Client','Service','Billing Method','Hours','Service Amount','Miles','Mileage Amount','Total Amount'], ...[...summaryMap.values()].sort((a,b)=>`${a.client}|${a.service}`.localeCompare(`${b.client}|${b.service}`)).map(x => [x.client, x.service, x.billingType === 'fixed' ? 'Fixed' : 'Hourly', Number(x.hours.toFixed(4)), Number(x.serviceAmount.toFixed(2)), Number(x.mileageMiles.toFixed(4)), Number(x.mileageAmount.toFixed(2)), Number(x.amount.toFixed(2))])];
+
+    const invoiceList = state.invoices.filter(inv => {
+      const clientMatch = ui.exportClientId === 'all' || inv.clientId === ui.exportClientId;
+      return clientMatch && (inv.issueDate || '') >= ui.exportStart && (inv.issueDate || '') <= ui.exportEnd;
+    }).sort((a,b) => (a.issueDate || '').localeCompare(b.issueDate || ''));
+    const invoiceRows = [['Invoice','Client','Issue Date','Due Date','Status','Currency','Service Amount','Miles','Mileage Amount','Subtotal','Tax Rate %','Tax','Total','Notes'], ...invoiceList.map(inv => {
+      const lineList = Array.isArray(inv.lines) ? inv.lines : [];
+      const serviceAmount = lineList.reduce((sum, line) => {
+        if (Number.isFinite(Number(line.serviceAmount))) return sum + Number(line.serviceAmount);
+        const mileageAmount = Number.isFinite(Number(line.mileageAmount)) ? Number(line.mileageAmount) : Number(line.mileageMiles || 0) * Number(line.mileageRate || 0);
+        return sum + Math.max(0, Number(line.amount || 0) - mileageAmount);
+      }, 0);
+      const mileageMiles = lineList.reduce((sum, line) => sum + Math.max(0, Number(line.mileageMiles || 0)), 0);
+      const mileageAmount = lineList.reduce((sum, line) => sum + (Number.isFinite(Number(line.mileageAmount)) ? Number(line.mileageAmount) : Math.max(0, Number(line.mileageMiles || 0)) * Math.max(0, Number(line.mileageRate || 0))), 0);
+      return [
+        inv.number || '', getClient(inv.clientId)?.name || inv.clientSnapshot?.name || '', inv.issueDate || '', inv.dueDate || '', inv.status === 'paid' ? 'Paid' : 'Issued', inv.currency || currencyCode(),
+        Number(serviceAmount.toFixed(2)), Number(mileageMiles.toFixed(4)), Number(mileageAmount.toFixed(2)), Number(inv.subtotal || 0), Number(inv.taxRate || 0), Number(inv.taxAmount || 0), Number(inv.total || 0), inv.notes || ''
+      ];
+    })];
+
+    const blob = buildXLSX([
+      { name: 'Invox Work Log', rows: detailRows, widths: [20,32,26,13,13,12,12,24,16,10,18,16,16,16,16,10,14,16,16,12,16,48] },
+      { name: 'Invox Daily Totals', rows: dailyRows, widths: [20,13,12,16,10,16,16] },
+      { name: 'Invox Summary', rows: summaryRows, widths: [20,24,16,12,16,10,16,16] },
+      { name: 'Invox Invoices', rows: invoiceRows, widths: [16,20,13,13,12,10,16,10,16,14,12,14,14,42] }
+    ]);
+    const clientPart = ui.exportClientId === 'all' ? 'all-clients' : (getClient(ui.exportClientId)?.name || 'client').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    downloadBlob(blob, `invox-${clientPart}-${ui.exportStart}-to-${ui.exportEnd}.xlsx`);
+    toast('Excel file created');
   }
 
-  function propertyValueCI(props, key) {
-    const target=String(key || '').toLowerCase();
-    const hit=Object.entries(props || {}).find(([k]) => String(k).toLowerCase()===target);
-    return hit ? hit[1] : '';
-  }
+  headerAction.addEventListener('click', () => {
+    if (ui.view === 'time') openBlockModal();
+    else if (ui.view === 'clients') openClientModal();
+    else if (ui.view === 'rates') openServiceModal();
+  });
 
-  function cleanConeText(value) {
-    if (!value) return '';
-    const holder=document.createElement('div');
-    holder.innerHTML=String(value).replace(/<br\s*\/?\s*>/gi,'\n').replace(/<\/p>/gi,'\n');
-    return (holder.textContent || holder.innerText || '').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
-  }
+  navButtons.forEach(btn => btn.addEventListener('click', () => setView(btn.dataset.view)));
 
-  function isConeSystemField(key) {
-    return /^(objectid|fid|oid|globalid|shape|shape__length|shape__area|latitude|longitude|created_|last_edited_|creator|editor)$/i.test(String(key || '')) || /^(objectid|globalid|shape)/i.test(String(key || ''));
-  }
-
-  function isSafeHttpUrl(value) {
-    if (typeof value !== 'string') return false;
-    try { const u=new URL(value); return u.protocol==='https:' || u.protocol==='http:'; } catch { return false; }
-  }
-
-  function formatConeDisplay(value) {
-    const formatted=formatConeValue(value,700);
-    if (isSafeHttpUrl(formatted)) return `<a href="${escapeHtml(formatted)}" target="_blank" rel="noopener noreferrer">${escapeHtml(formatted)}</a>`;
-    return escapeHtml(formatted).replace(/\n/g,'<br>');
-  }
-
-  function firstProperty(props, names) { const hit=firstPropertyEntry(props,names); return hit ? hit[1] : ''; }
-  function firstPropertyEntry(props, names) {
-    const entries=Object.entries(props || {});
-    for (const wanted of names) {
-      const hit=entries.find(([k]) => k.toLowerCase().replace(/[^a-z0-9]/g,'') === wanted.toLowerCase().replace(/[^a-z0-9]/g,''));
-      if (hit) return hit;
-    }
-    return null;
-  }
-  function friendlyFieldName(key) { return String(key).replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/\b\w/g,m=>m.toUpperCase()); }
-  function formatConeValue(value, maxLength=700) {
-    if (typeof value === 'number' && value > 946684800000 && value < 4102444800000) {
-      const d=new Date(value); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString();
-    }
-    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (Array.isArray(value)) value=value.join(', ');
-    const s=String(value ?? '');
-    const ms=/^\/Date\((\d+)\)\/$/.exec(s); if (ms) { const d=new Date(Number(ms[1])); if (!Number.isNaN(d.getTime())) return d.toLocaleDateString(); }
-    return s.length > maxLength ? `${s.slice(0,maxLength-1)}…` : s;
-  }
-
-  function esriFeaturesToGeoJson(features, geometryType) {
-    const out=[];
-    for (const f of features || []) {
-      const g=f.geometry || {};
-      let geometry=null;
-      if (Number.isFinite(g.x) && Number.isFinite(g.y)) geometry={type:'Point',coordinates:[g.x,g.y]};
-      else if (Array.isArray(g.paths)) geometry={type:g.paths.length>1?'MultiLineString':'LineString',coordinates:g.paths.length>1?g.paths:g.paths[0]};
-      else if (Array.isArray(g.rings)) geometry={type:'Polygon',coordinates:g.rings};
-      if (geometry) out.push({type:'Feature',geometry,properties:f.attributes || {}});
-    }
-    return {type:'FeatureCollection',features:out};
-  }
-
-  function permitNearAnyCorridor(p) {
-    if (!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)) return false; const point=turf.point([p.lng,p.lat]);
-    for (const c of state.corridors) {
-      const feet=Number(c.bufferFeet||0);
-      for (const path of getCorridorPaths(c)) {
-        try { const line=turf.lineString(path.map(([lat,lng])=>[lng,lat])); if (turf.pointToLineDistance(point,line,{units:'feet'})<=Math.max(feet,25)) return true; } catch {}
-      }
-    }
-    return false;
-  }
-
-  function permitNearAnyVenue(p) {
-    if (!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)) return false; const point=turf.point([p.lng,p.lat]);
-    for (const v of venueRuntime.values()) if (turf.distance(point,turf.point([v.lng,v.lat]),{units:'miles'})*5280<=VENUE_NEAR_FEET) return true;
-    return false;
-  }
-
-  function dateRangeIntersects(start,end,from,to) { if (!start&&!end) return false; const s=start||end,e=end||start; if (from&&e<from) return false; if (to&&s>to) return false; return true; }
-
-  function refreshFilterOptions() {
-    const currentWork=els.workTypeFilter.value,currentContractor=els.contractorFilter.value; const workTypes=uniqueExact(state.permits.map(p=>p.workType)),contractors=uniqueExact(state.permits.map(p=>p.contractor));
-    els.workTypeFilter.innerHTML='<option value="">All work types</option>'+workTypes.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
-    els.contractorFilter.innerHTML='<option value="">All contractors</option>'+contractors.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(prettySource(v))}</option>`).join('');
-    els.workTypeFilter.value=workTypes.includes(currentWork)?currentWork:''; els.contractorFilter.value=contractors.includes(currentContractor)?currentContractor:'';
-  }
-
-  function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(p=>!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); }
-  function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
-
-  function resetFilters() {
-    els.searchFilter.value=''; els.dateFrom.value=''; els.dateTo.value=''; els.workTypeFilter.value=''; els.contractorFilter.value=''; els.corridorOnlyFilter.checked=false; els.venueOnlyFilter.checked=false; els.hideClosedFilter.checked=true; els.hideArchivedFilter.checked=true;
-    els.statusFilters.querySelectorAll('input').forEach(i=>i.checked=true); renderAll();
-  }
-
-  function fitAll() {
-    const points=[]; for (const p of filteredPermits()) if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) points.push([p.lat,p.lng]); for (const v of venueRuntime.values()) points.push([v.lat,v.lng]); for (const c of state.corridors) for (const path of getCorridorPaths(c)) points.push(...path);
-    if (els.layerConeZones.checked && coneZonesLoaded && coneZonesLayer.getLayers().length) { const b=coneZonesLayer.getBounds(); if (b.isValid()) { points.push([b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]); } }
-    if (points.length) map.fitBounds(points,{padding:[35,35],maxZoom:16}); else map.setView(BOULDER_CENTER,13);
-  }
-
-  function exportBackup() {
-    const payload={ format:'pas-de-deux-backup', version:2, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors };
-    downloadBlob(`pas-de-deux-backup-${todayStamp()}.json`,JSON.stringify(payload,null,2),'application/json');
-  }
-
-  async function importBackup(e) {
-    const file=e.target.files?.[0]; if (!file) return;
+  async function ensurePersistentStorage() {
     try {
-      const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
-      if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
-      if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors}); saveState(); rebuildCorridors(); renderAll(); toast('Backup imported.');
-    } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
-  }
-
-  function exportCsv() {
-    const headers=['source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
-    const rows=state.permits.map(p=>[p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
-    const csv=[headers,...rows].map(row=>row.map(csvCell).join(',')).join('\r\n'); downloadBlob(`pas-de-deux-permits-${todayStamp()}.csv`,csv,'text/csv;charset=utf-8');
-  }
-
-  function clearAllData() {
-    if (!confirm('Clear ALL local permits, corridors, notes, dates, and statuses from this browser? Export a backup first if you may need them.')) return;
-    state={initialized:true,permits:[],corridors:[]}; saveState(); rebuildCorridors(); renderAll(); toast('Local permit and corridor data cleared.');
-  }
-
-  function loadState() {
-    try { const raw=localStorage.getItem(STORAGE_KEY); if (!raw) return {initialized:false,permits:[],corridors:[]}; const parsed=JSON.parse(raw); return {initialized:!!parsed.initialized,permits:Array.isArray(parsed.permits)?parsed.permits:[],corridors:Array.isArray(parsed.corridors)?parsed.corridors:[]}; }
-    catch { return {initialized:false,permits:[],corridors:[]}; }
-  }
-
-  function migrateState(input) {
-    const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[]};
-    for (const p of output.permits) {
-      if (p.status==='Application') p.status='Upcoming';
-      if (p.status==='Archived') { p.status='Closed'; p.archived=true; }
-      if (!STATUS_VALUES.includes(p.status)) p.status='Upcoming';
-      if (typeof p.archived!=='boolean') p.archived=false;
+      if (!navigator.storage?.persisted) return;
+      let granted = await navigator.storage.persisted();
+      if (!granted && navigator.storage.persist) granted = await navigator.storage.persist();
+      ui.storagePersistent = Boolean(granted);
+    } catch (_) {
+      ui.storagePersistent = false;
     }
-    for (const c of output.corridors) {
-      if (!Array.isArray(c.paths) && Array.isArray(c.latlngs)) c.paths=[c.latlngs];
-      if (!c.sourceType) c.sourceType='custom';
-      if (!c.scope) c.scope=c.sourceType==='street'?'Street corridor':'Custom route';
+  }
+
+  async function init() {
+    try {
+      db = await openDB();
+      const saved = await dbGet(STATE_KEY);
+      if (saved && Array.isArray(saved.clients) && Array.isArray(saved.services) && Array.isArray(saved.entries)) state = normalizeState(saved);
+      else state = normalizeState(state);
+      ui.selectedClientId = state.clients[0]?.id || '';
+      await ensurePersistentStorage();
+      render();
+      if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+    } catch (err) {
+      appEl.innerHTML = `<div class="card pad"><div class="warning"><strong>Storage unavailable.</strong> This browser is not allowing the local database needed to save records.</div></div>`;
+      console.error(err);
     }
-    return output;
   }
 
-  function saveState() { localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
-  function locationDescription(p) { if (p.matchMethod==='manual') return `Location: manual map placement (${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)})`; if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) return `Location: ${p.matchedFullAddr||'Boulder public address match'} • ${p.matchMethod||'matched'}`; return 'Location: not matched yet. The permit remains available for manual placement.'; }
-  function displayAddress(p) { return `${String(p.addressNumber).trim()} ${prettySource(p.street)}`.trim(); }
-
-  function prettySource(value) {
-    return String(value??'').replace(/\b([a-z][a-z']*)\b/gi,token=>{ if (/^[A-Z0-9]{2,}$/.test(token)) return token; if (/^\d+(st|nd|rd|th)$/i.test(token)) return token.toLowerCase(); return token.charAt(0).toUpperCase()+token.slice(1).toLowerCase(); });
-  }
-  function normalizeMatch(value) { return String(value??'').toLowerCase().replace(/[.,#]/g,' ').replace(/\b(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|court|ct|place|pl|way)\b/g,' ').replace(/\s+/g,' ').trim(); }
-  function uniqueExact(arr) { return [...new Set(arr.filter(v=>v!==null&&v!==undefined&&v!==''))].sort((a,b)=>prettySource(a).localeCompare(prettySource(b))); }
-  function statusClass(status) { return String(status||'').toLowerCase().replace(/[^a-z0-9]+/g,'-'); }
-  function isFiniteNumber(v) { return typeof v==='number'&&Number.isFinite(v); }
-  function cryptoRandomId(prefix) { return `${prefix}-${crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(16).slice(2)}`}`; }
-  function todayStamp() { return new Date().toISOString().slice(0,10); }
-  function csvCell(v) { const s=String(v??''); return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; }
-  function downloadBlob(name,text,type) { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }
-  function escapeHtml(s) { return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-  function escapeAttr(s) { return escapeHtml(s).replace(/'/g,'&#39;'); }
-
-  function toast(message) { els.toast.textContent=message; els.toast.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>els.toast.classList.remove('show'),4200); }
-
-  function openDb() { return new Promise((resolve,reject)=>{ const req=indexedDB.open(DB_NAME,1); req.onupgradeneeded=()=>req.result.createObjectStore(DB_STORE); req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error); }); }
-  async function idbSet(key,value) { try { const db=await openDb(); await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readwrite'); tx.objectStore(DB_STORE).put(value,key); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); db.close(); } catch {} }
-  async function idbGet(key) { try { const db=await openDb(); const value=await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readonly'); const req=tx.objectStore(DB_STORE).get(key); req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error); }); db.close(); return value; } catch { return null; } }
+  init();
 })();
