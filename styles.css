@@ -257,3 +257,24 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 @media(max-height:660px){.map-key{bottom:10px}.marker-editor{bottom:12px;right:275px;max-height:calc(100% - 25px)}}
 
 :root[data-theme="dark"] body { background:var(--page); }
+
+
+/* v2.6 — inventory clearing is visible, never masquerades as a visibility toggle. */
+.inventory-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+.inventory-tools>span{display:grid;gap:3px;min-width:0}
+.inventory-tools strong{font-size:11px;letter-spacing:.012em;color:var(--ink)}
+.inventory-tools small{font-size:9px;color:var(--muted)}
+.clear-permits-btn{border:1px solid #c97a7a;background:transparent;color:#a32e3b;white-space:nowrap;border-radius:8px;padding:9px 11px;font-size:10px;font-weight:760;cursor:pointer}
+.clear-permits-btn:hover{background:rgba(191,57,70,.09);border-color:#b94351}
+.clear-permits-btn span{font-size:12px;margin-left:4px}
+:root[data-theme="dark"] .clear-permits-btn{color:#ffbbc3;border-color:#a76f79}
+:root[data-theme="dark"] .clear-permits-btn:hover{background:rgba(240,138,151,.12)}
+/* Strongly legible venue context, colored independently of venue markers. */
+.legend-buffer-swatch{width:17px;height:17px;border-radius:50%;flex:0 0 17px;border:3px solid var(--buffer-swatch);background:color-mix(in srgb,var(--buffer-swatch) 35%,transparent);box-shadow:0 0 0 1px rgba(22,36,52,.24)}
+#bufferPaletteControls .field{margin:0 0 13px}
+#bufferPaletteControls .buffer-color-field{display:flex;justify-content:space-between;align-items:center;gap:12px}
+#bufferColor{width:45px;height:31px;border:1px solid var(--line-strong);padding:2px;border-radius:8px;cursor:pointer;background:var(--panel)}
+#bufferPaletteControls .buffer-opacity-field>span{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+#bufferOpacityLabel{font-weight:760;color:var(--ink);font-size:11px}
+#bufferOpacity{width:100%;accent-color:#8b5cf6;cursor:pointer}
+.buffer-editor-note{font-size:10px;line-height:1.45;color:var(--muted);margin:10px 0 2px}

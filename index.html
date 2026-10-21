@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-app-version="2.5.1">
+<html lang="en" data-theme="light" data-app-version="2.6.0">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="./styles.css?v=2.5.1" />
+  <link rel="stylesheet" href="./styles.css?v=2.6.0" />
 </head>
 <body>
   <header class="appbar">
@@ -34,8 +34,6 @@
           <label for="importBackup">Import backup</label>
           <input id="importBackup" type="file" accept="application/json,.json" hidden />
           <button id="exportCsvBtn">Export permit CSV</button>
-          <div class="menu-rule"></div>
-          <button id="clearAllBtn" class="danger-text">Clear all permits…</button>
         </div>
       </div>
     </div>
@@ -48,6 +46,10 @@
         <div><strong id="visibleCount">0</strong><span>Visible</span></div>
         <div><strong id="totalCount">0</strong><span>Total</span></div>
         <div><strong id="unlocatedCount">0</strong><span>Unlocated</span></div>
+      </div>
+      <div class="inventory-tools">
+        <span><strong>Permit inventory</strong><small>Local records on this device</small></span>
+        <button id="clearAllBtn" class="clear-permits-btn" type="button" aria-label="Clear all imported permits permanently">Clear all permits <span aria-hidden="true">↗</span></button>
       </div>
 
       <section class="section">
@@ -135,12 +137,17 @@
         <div class="marker-editor-head"><div><span class="eyebrow">MAP APPEARANCE</span><h3 id="markerEditorTitle">Permit pins</h3></div><button type="button" id="closeMarkerEditor" class="marker-editor-close" aria-label="Close marker settings">×</button></div>
         <p class="marker-editor-help">These are default map styles. Existing permit records stay unchanged.</p>
         <label class="field" id="pinColorModeWrap"><span>Permit colors</span><select id="pinColorMode"><option value="single">One color</option><option value="status">By status</option></select></label>
+        <div id="bufferPaletteControls" hidden>
+          <label class="field buffer-color-field"><span>Buffer fill &amp; outline color</span><input id="bufferColor" type="color" value="#8b5cf6" aria-label="500-foot buffer color" /></label>
+          <label class="field buffer-opacity-field"><span>Fill strength <output id="bufferOpacityLabel" for="bufferOpacity">25%</output></span><input id="bufferOpacity" type="range" min="10" max="50" step="5" value="25" aria-label="Buffer fill strength" /></label>
+          <p class="buffer-editor-note">Shows the same 500-ft radius around each venue. Only the appearance changes.</p>
+        </div>
         <div id="pinPaletteControls">
           <span class="control-label">Marker color</span>
           <div id="pinPalette" class="pin-palette" role="group" aria-label="Default marker color"></div>
           <label class="custom-color"><span>Custom</span><input id="pinColorCustom" type="color" value="#1e779e" aria-label="Custom marker color" /></label>
         </div>
-        <div class="two-col">
+        <div id="pinGeometryControls" class="two-col">
           <label class="field"><span>Shape</span><select id="pinShape"><option value="pin">Map pin</option><option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option></select></label>
           <label class="field"><span>Size</span><select id="pinSize"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
         </div>
@@ -223,11 +230,11 @@
   <dialog id="clearPermitsDialog" class="dialog small-dialog">
     <form method="dialog" id="clearPermitsForm">
       <div class="dialog-head"><div><span class="dialog-kicker">Data management</span><h2>Clear all permits</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
-      <p class="dialog-intro"><strong id="clearPermitsCount">0</strong> permits will be removed from this browser, including their notes, status, coordinates and archived records. Your corridors, venue layers, Cone Zones and appearance settings will stay.</p>
-      <p class="dialog-intro">This cannot be undone without a backup. Reconnecting the same permit folder later can re-import its filenames but will not restore annotations.</p>
+      <p class="dialog-intro"><strong id="clearPermitsCount">0</strong> permits will be <strong>permanently deleted from this device</strong> — including all hidden, closed, archived and filtered-out records, plus permit notes and pin placements. Your corridors, venue layers, Cone Zones and map appearance will stay.</p>
+      <p class="dialog-intro">The connected permit folder will also be disconnected. This cannot be undone without a backup. If you reconnect the folder, its filenames can be imported again, but your previous annotations will not return.</p>
       <button id="backupBeforeClearBtn" type="button" class="button full">Download backup first</button>
       <label class="field confirm-field"><span>Type CLEAR to confirm</span><input id="clearConfirmInput" name="clearConfirmInput" autocomplete="off" spellcheck="false" placeholder="CLEAR" /></label>
-      <div class="dialog-actions"><button class="button" value="cancel">Cancel</button><button id="confirmClearPermitsBtn" type="submit" class="button danger-solid" disabled>Clear permits permanently</button></div>
+      <div class="dialog-actions"><button class="button" value="cancel">Cancel</button><button id="confirmClearPermitsBtn" type="button" class="button danger-solid" disabled>Clear permits permanently</button></div>
     </form>
   </dialog>
 
@@ -235,6 +242,6 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
-  <script src="./app.js?v=2.5.1"></script>
+  <script src="./app.js?v=2.6.0"></script>
 </body>
 </html>

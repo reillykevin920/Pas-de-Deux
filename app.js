@@ -36,7 +36,7 @@
   ];
   const STATUS_VALUES = ['In Review','Upcoming','Active','Closed'];
   const PIN_COLORS = ['#2563eb','#ea580c','#be123c','#0f766e','#7c3aed','#111827','#eab308','#e11d48'];
-  const DEFAULT_APPEARANCE = { theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium' };
+  const DEFAULT_APPEARANCE = { theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium', bufferColor:'#8b5cf6', bufferOpacity:.25 };
 
   let state = migrateState(loadState());
   let map;
@@ -45,7 +45,7 @@
   let venueBuildingLayer;
   let venueContextLayer;
   let venueMarkersReady = false;
-  let activeMarkerEditor = 'permits';
+  let activeMarkerEditor = 'permits'; // permits | venues | buffers
   let corridorLayer;
   let corridorPreviewLayer;
   let corridorEndpointLayer;
@@ -106,7 +106,7 @@
       'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
-      'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
+      'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','bufferPaletteControls','bufferColor','bufferOpacity','bufferOpacityLabel','pinGeometryControls','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
       'deletePermitBtn','streetScopeDialog','streetScopeForm','selectedStreetName','wholeStreetBtn','streetSectionBtn','corridorDialog','corridorForm',
       'unlocatedDialog','closeUnlocatedBtn','unlocatedList'
     ].forEach(id => els[id] = document.getElementById(id));
@@ -159,15 +159,27 @@
 
   function openMarkerEditor(category) {
     activeMarkerEditor=category;
-    const data=appearanceFor(category);
-    els.markerEditorTitle.textContent=category==='venues'?'Sundance site markers':'Permit markers';
-    els.pinColorModeWrap.hidden=category==='venues';
-    els.pinColorMode.value=data.mode;
-    els.pinColorCustom.value=data.color;
-    els.pinShape.value=data.shape;
-    els.pinSize.value=data.size;
-    els.pinPaletteControls.hidden=category==='permits' && data.mode==='status';
-    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===data.color)));
+    const isBuffer=category==='buffers';
+    const data=isBuffer?null:appearanceFor(category);
+    els.markerEditorTitle.textContent=isBuffer?'500-ft venue context':category==='venues'?'Sundance site markers':'Permit markers';
+    els.markerEditor.querySelector('.marker-editor-help').textContent=isBuffer
+      ? 'A visible 500-ft radius around each Sundance venue. This layer does not change permit impact assessments.'
+      : 'These are default map styles. Existing permit records stay unchanged.';
+    els.bufferPaletteControls.hidden=!isBuffer;
+    els.pinColorModeWrap.hidden=category!=='permits';
+    els.pinPaletteControls.hidden=isBuffer || (category==='permits' && state.appearance.pinColorMode==='status');
+    els.pinGeometryControls.hidden=isBuffer;
+    if (isBuffer) {
+      els.bufferColor.value=state.appearance.bufferColor;
+      els.bufferOpacity.value=Math.round(state.appearance.bufferOpacity*100);
+      els.bufferOpacityLabel.textContent=`${Math.round(state.appearance.bufferOpacity*100)}%`;
+    } else {
+      els.pinColorMode.value=data.mode;
+      els.pinColorCustom.value=data.color;
+      els.pinShape.value=data.shape;
+      els.pinSize.value=data.size;
+      els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===data.color)));
+    }
     els.markerEditor.hidden=false;
     updateLegend();
   }
@@ -191,6 +203,29 @@
     }
     els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===(activeMarkerEditor==='venues'?a.venueColor:a.pinColor))));
     saveState();updateLegend();
+  }
+
+  function updateBufferAppearance() {
+    state.appearance.bufferColor=els.bufferColor.value;
+    state.appearance.bufferOpacity=Number(els.bufferOpacity.value)/100;
+    els.bufferOpacityLabel.textContent=`${els.bufferOpacity.value}%`;
+    renderVenueContext();
+    saveState();
+    updateLegend();
+  }
+
+  function renderVenueContext() {
+    venueContextLayer.clearLayers();
+    for (const venue of venueRuntime.values()) {
+      L.circle([venue.lat,venue.lng],{
+        radius:VENUE_NEAR_FEET*.3048,
+        color:state.appearance.bufferColor,
+        weight:3, opacity:.98,
+        fillColor:state.appearance.bufferColor,
+        fillOpacity:state.appearance.bufferOpacity,
+        interactive:false
+      }).addTo(venueContextLayer);
+    }
   }
 
   function pinColor(p) {
@@ -219,6 +254,9 @@
       </button>
       <button type="button" class="legend-edit-row" data-style-category="venues" aria-label="Edit default Sundance site marker appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='venues'}">
         <span class="legend-edit-left">${swatch(a.venueColor,a.venueShape)}<span>Sundance sites</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
+      </button>
+      <button type="button" class="legend-edit-row" data-style-category="buffers" aria-label="Edit 500-foot venue context appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='buffers'}">
+        <span class="legend-edit-left"><i class="legend-buffer-swatch" style="--buffer-swatch:${a.bufferColor};--buffer-opacity:${a.bufferOpacity}"></i><span>500-ft venue context</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
       </button>
       <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
       <div class="legend-static-row"><i class="cone-key"></i><span>Cone Zones</span></div>
@@ -305,13 +343,15 @@
     els.clearAllBtn.addEventListener('click', () => { toggleDataMenu(false); showClearPermitsDialog(); });
     els.backupBeforeClearBtn.addEventListener('click', exportBackup);
     els.clearConfirmInput.addEventListener('input', () => { els.confirmClearPermitsBtn.disabled=els.clearConfirmInput.value.trim()!=='CLEAR'; });
-    els.clearPermitsForm.addEventListener('submit', clearAllPermits);
+    els.confirmClearPermitsBtn.addEventListener('click', clearAllPermits);
     document.querySelectorAll('[data-theme-choice]').forEach(button=>button.addEventListener('click',()=>{state.appearance.theme=button.dataset.themeChoice;applyTheme();saveState();}));
     els.showVenuesBtn.addEventListener('click',fitVenues);
     els.pinColorMode.addEventListener('change', () => updateAppearance());
     els.pinColorCustom.addEventListener('input', () => updateAppearance());
     els.pinShape.addEventListener('change', () => updateAppearance());
     els.pinSize.addEventListener('change', () => updateAppearance());
+    els.bufferColor.addEventListener('input', updateBufferAppearance);
+    els.bufferOpacity.addEventListener('input', updateBufferAppearance);
 
     els.fitAllBtn.addEventListener('click', fitAll);
     els.addCorridorBtn.addEventListener('click', () => { els.corridorActions.hidden = !els.corridorActions.hidden; });
@@ -557,8 +597,9 @@
       if (!Number.isFinite(venue.lat)||!Number.isFinite(venue.lng)) continue;
       venueRuntime.set(venue.id,venue);
       addVenueMarker(venue);
-      L.circle([venue.lat,venue.lng],{radius:VENUE_NEAR_FEET*.3048,color:'#e8ac5d',weight:1,opacity:.45,fillColor:'#e8ac5d',fillOpacity:.055,dashArray:'4 6',interactive:false}).addTo(venueContextLayer);
+
     }
+    renderVenueContext();
     venueMarkersReady=true;
     if (els.venueCountBadge) els.venueCountBadge.textContent=String(venueRuntime.size);
     if (els.venueStatus) {els.venueStatus.textContent=`${venueRuntime.size} verified venue sites mapped. Building outlines load separately when public GIS is available.`;els.venueStatus.hidden=false;}
@@ -1509,7 +1550,7 @@
       const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
       if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
       if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
+      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); renderVenueContext(); renderVenueMarkers(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
     } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
   }
 
@@ -1524,15 +1565,23 @@
     els.clearConfirmInput.value=''; els.confirmClearPermitsBtn.disabled=true;
     els.clearPermitsDialog.showModal();
   }
-  function clearAllPermits(e) {
-    if (e.submitter?.value==='cancel') return;
+  async function clearAllPermits(e) {
     e.preventDefault();
     if (els.clearConfirmInput.value.trim()!=='CLEAR') return;
     const removed=state.permits.length;
+    els.confirmClearPermitsBtn.disabled=true;
+    // Clear the COMPLETE local inventory, never only the currently visible/filter-selected permits.
     state.permits=[];
-    saveState();renderAll();
+    currentPermitId=null; mapMovePermitId=null; manualPlacePermitId=null;
+    if (els.manualPinModeBar) els.manualPinModeBar.hidden=true;
+    folderHandle=null;
+    saveState();
+    resetFilters();
     els.clearPermitsDialog.close();
-    toast(`${removed} permit records cleared. Corridors and map settings were preserved.`);
+    updateFolderButton();
+    // Disconnect previously authorized import folder, so there is no stale folder to resync.
+    await idbDelete('permitFolder');
+    toast(`${removed} permits permanently cleared. The folder was disconnected; corridors and map settings remain.`);
   }
 
   function loadState() {
@@ -1542,7 +1591,7 @@
 
   function migrateState(input) {
     const candidate={...DEFAULT_APPEARANCE,...(input.appearance||{})};
-    const appearance={theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium'};
+    const appearance={theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium',bufferColor:/^#[0-9a-f]{6}$/i.test(candidate.bufferColor)?candidate.bufferColor:'#8b5cf6',bufferOpacity:Number.isFinite(Number(candidate.bufferOpacity))?Math.min(.5,Math.max(.10,Number(candidate.bufferOpacity))):.25};
     const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[],appearance};
     for (const p of output.permits) {
       if (p.status==='Application') p.status='Upcoming';
@@ -1580,5 +1629,16 @@
 
   function openDb() { return new Promise((resolve,reject)=>{ const req=indexedDB.open(DB_NAME,1); req.onupgradeneeded=()=>req.result.createObjectStore(DB_STORE); req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error); }); }
   async function idbSet(key,value) { try { const db=await openDb(); await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readwrite'); tx.objectStore(DB_STORE).put(value,key); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); }); db.close(); } catch {} }
+  async function idbDelete(key) {
+    try {
+      const db=await openDb();
+      await new Promise((resolve,reject)=>{
+        const tx=db.transaction(DB_STORE,'readwrite');
+        tx.objectStore(DB_STORE).delete(key);
+        tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error);
+      });
+      db.close();
+    } catch (err) { console.warn('Could not remove saved folder handle',err); }
+  }
   async function idbGet(key) { try { const db=await openDb(); const value=await new Promise((resolve,reject)=>{ const tx=db.transaction(DB_STORE,'readonly'); const req=tx.objectStore(DB_STORE).get(key); req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error); }); db.close(); return value; } catch { return null; } }
 })();
