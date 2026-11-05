@@ -1,8 +1,8 @@
-# Pas de Deux — v2.7.0
+# Pas de Deux — v2.8.0
 
 Interactive Boulder event/permit coordination map. Single-workstation/local-browser build; future shared permit-tech deployment will require authenticated shared storage.
 
-## New in v2.7 — published City road characteristics
+## Updated in v2.8 — published City road characteristics
 
 - **Street classifications** and **Speed limits** are two new optional map overlays. Both read the City's publicly published [RoadCharacteristics_1 FeatureServer](https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer), layers 2 and 3.
 - Toggle either layer under **Map layers**. Each loads on demand and displays the City's line segments as solid colored classifications or dashed color-coded speed limits. Click a segment to see its City-provided street name and designation.
@@ -44,3 +44,11 @@ Interactive Boulder event/permit coordination map. Single-workstation/local-brow
 - Building footprints, address resolution, street centerlines: City's public ArcGIS REST services. External datasets and the City's public Cone Zones map may temporarily be unavailable. Venue pins are no longer dependent on those background GIS calls.
 
 **Testing:** The page's real JavaScript/CSS was exercised in a browser using local stand-ins for external mapping libraries/services (checking theme switching, appearance editing, 12-venue initialization, and no startup errors). Regression checks cover the 16 sample permit *filenames* and in-browser confirmation/cancel/clear flows, including archived, hidden and unlocated records and corridor preservation. A complete live hosted-browser test against the real Boulder GIS, basemap, and Cone Zones endpoints must still be performed after publishing.
+
+## v2.8 improvements
+
+- Street classification and speed-limit overlays use the actual unique-value renderer from City ArcGIS metadata, with source-verified fallback colors/line widths. The original City line symbols are solid.
+- Expandable legends show every class and speed category with its own color; this is map source symbology, not one color for all streets.
+- Each 1,000-record batch appears as it is loaded, rather than holding all streets back until the last network response. Individual status messages report loaded counts or errors.
+- Road designation layers remain reference overlays; they do not automatically define staff-approved special-event corridors or change permit records.
+- Boulder speed-limit source may omit default 20 mph neighborhood streets; this layer displays what the City publishes, not inferred limits.
