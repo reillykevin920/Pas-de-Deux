@@ -278,3 +278,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 #bufferOpacityLabel{font-weight:760;color:var(--ink);font-size:11px}
 #bufferOpacity{width:100%;accent-color:#8b5cf6;cursor:pointer}
 .buffer-editor-note{font-size:10px;line-height:1.45;color:var(--muted);margin:10px 0 2px}
+
+/* v2.7: City street classification/speed limit map references */
+.road-class-key,.road-speed-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:3px solid #ed23ac}
+.road-speed-key{border-top:3px dashed #8457f7}
+.road-reference-source{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);font-size:10px;color:#64748b}

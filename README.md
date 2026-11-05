@@ -1,6 +1,14 @@
-# Pas de Deux — v2.6.0
+# Pas de Deux — v2.7.0
 
 Interactive Boulder event/permit coordination map. Single-workstation/local-browser build; future shared permit-tech deployment will require authenticated shared storage.
+
+## New in v2.7 — published City road characteristics
+
+- **Street classifications** and **Speed limits** are two new optional map overlays. Both read the City's publicly published [RoadCharacteristics_1 FeatureServer](https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer), layers 2 and 3.
+- Toggle either layer under **Map layers**. Each loads on demand and displays the City's line segments as solid colored classifications or dashed color-coded speed limits. Click a segment to see its City-provided street name and designation.
+- The underlying City layers are *references*, not official designated event corridors. User-defined operational corridors stay independent, editable, and locally stored. The new layers do not change permit data or automatically assess impacts.
+- Data loads from City GIS on first toggle per page session; reload the app to request the latest published version. ArcGIS limits results to 1,000 features per response, so the app requests additional pages instead of silently dropping roads. Neither layer needs an API key.
+- **Validation limitation:** Verified both public layers advertise polyline geometry, classification/speed attributes, paginated querying and GeoJSON support. The service's actual feature-query responses could not be executed from this environment, so a hosted browser test of both toggles is still required.
 
 ## Changes in this release
 
@@ -9,7 +17,7 @@ Interactive Boulder event/permit coordination map. Single-workstation/local-brow
 - **500-ft venue context is now conspicuous** at useful zoom levels: a 3-pixel solid outline and stronger translucent fill, rather than the old nearly invisible dashed outline.
 - **Map key customization:** Click **500-ft venue context → Edit** inside the map key to set its color and fill strength (10–50%). Changes apply immediately and are saved along with the rest of the app appearance. The buffer's **500-ft physical radius stays constant** and never assigns impact to a permit.
 - **Retains v2.5.1 map layout and Light/Dark choices**, permit/Sundance category marker customization, verified 12-site Sundance venue markers, street-aware corridors, and City Cone Zones reference features.
-- Versioned assets (`app.js?v=2.6.0`, `styles.css?v=2.6.0`) ensure this HTML points to the matching release after deployment.
+- Versioned assets (`app.js?v=2.7.0`, `styles.css?v=2.7.0`) ensure this HTML points to the matching release after deployment.
 
 ## Existing behavior preserved
 

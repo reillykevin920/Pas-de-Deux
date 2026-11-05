@@ -14,6 +14,25 @@
   const STREET_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/trans/StreetsSimple/MapServer/0/query';
   const CONE_ZONES_EXPERIENCE_ID = '45ea51935a18499281af2980bfa3b7e5';
   const ARCGIS_ITEMS_ROOT = 'https://www.arcgis.com/sharing/rest/content/items';
+  // The City's published Road Characteristics service; no account or API key.
+  // Layer 2 = functional classification, layer 3 = posted speed designation.
+  const ROAD_SERVICE_ROOT = 'https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer';
+  const ROAD_REFERENCES = {
+    classes: { id:2, label:'Street classifications', field:'ROADCLASS' },
+    speeds: { id:3, label:'Speed limits', field:'SPEEDLIMIT' }
+  };
+  const ROAD_CLASS_COLORS = {
+    'Principal Arterial':'#ed23ac', 'Minor Arterial':'#267300',
+    'Major Collector':'#55cc00', 'Minor Collector':'#0064b8',
+    'Local':'#969696', 'Limited Access':'#a774b6'
+  };
+  const ROAD_SPEED_COLORS = {
+    '15 MPH':'#50803b', '25 MPH':'#c59e00', '30 MPH':'#c26e97',
+    '35 MPH':'#32468f', '40 MPH':'#822f70', '45 MPH':'#8457f7',
+    '50 MPH':'#73a832', '55 MPH':'#b89536', '60 MPH':'#d063d6',
+    '65 MPH':'#44a4ab', '70 MPH':'#8ac7ab', '75 MPH':'#54ad5c',
+    '80 MPH':'#8f99d9'
+  };
 
   // 12 source-verified physical venue sites (15 programming entries share some buildings).
   // Coordinates: OpenStreetMap mapped venue geometries, eTown and CU venue websites,
@@ -53,6 +72,9 @@
   let coneZonesLoaded = false;
   let coneZonesLoading = null;
   let coneZonesFeatureCount = 0;
+  const roadLayers = {};
+  const roadLoaded = { classes:false, speeds:false };
+  const roadLoading = { classes:null, speeds:null };
   let currentPermitId = null;
   let currentCorridorId = null;
   let pendingCorridor = null;
@@ -103,7 +125,7 @@
   function cacheElements() {
     [
       'visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
-      'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','fitAllBtn',
+      'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerStreetClasses','layerSpeedLimits','roadStatus','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
       'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','bufferPaletteControls','bufferColor','bufferOpacity','bufferOpacityLabel','pinGeometryControls','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
@@ -260,7 +282,9 @@
       </button>
       <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
       <div class="legend-static-row"><i class="cone-key"></i><span>Cone Zones</span></div>
-      <div class="legend-note">Click a marker category to customize it.</div>`;
+      <div class="legend-static-row"><i class="road-class-key"></i><span>Street classes · solid</span></div>
+      <div class="legend-static-row"><i class="road-speed-key"></i><span>Speed limits · dashed</span></div>
+      <div class="legend-note">Click roads for City designations; click marker categories to customize.</div>`;
   }
 
   function initMap() {
@@ -278,6 +302,18 @@
     corridorPreviewLayer = L.layerGroup().addTo(map);
     corridorEndpointLayer = L.layerGroup().addTo(map);
     coneZonesLayer = L.featureGroup();
+    // Separate panes keep City road references behind editable corridors/markers.
+    for (const [kind,zIndex] of [['classes',350],['speeds',360]]) {
+      const paneName = `pdd-road-${kind}`;
+      map.createPane(paneName);
+      map.getPane(paneName).style.zIndex = String(zIndex);
+      const ref = ROAD_REFERENCES[kind];
+      roadLayers[kind] = L.geoJSON(null, {
+        pane:paneName,
+        style:feature=>roadReferenceStyle(kind,feature),
+        onEachFeature:(feature,layer)=>layer.bindPopup(roadReferencePopup(kind,feature),{maxWidth:350})
+      });
+    }
     permitCluster.addTo(map);
 
     map.on(L.Draw.Event.CREATED, e => {
@@ -377,6 +413,12 @@
       updateLayerVisibility();
       if (els.layerConeZones.checked) await ensureConeZonesLoaded();
     });
+    for (const [kind,checkbox] of [['classes',els.layerStreetClasses],['speeds',els.layerSpeedLimits]]) {
+      checkbox.addEventListener('change', () => {
+        updateLayerVisibility();
+        if (checkbox.checked) void ensureRoadLayerLoaded(kind);
+      });
+    }
     ['searchFilter','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter']
       .forEach(id => els[id].addEventListener('input', scheduleRender));
     els.statusFilters.addEventListener('change', scheduleRender);
@@ -1074,6 +1116,80 @@
     });
   }
 
+  function roadReferenceStyle(kind,feature) {
+    const value=String(feature?.properties?.[ROAD_REFERENCES[kind].field] || '');
+    if (kind==='classes') return {
+      color:ROAD_CLASS_COLORS[value] || '#858e96', weight:value==='Local'?1.5:3.2,
+      opacity:.8, lineCap:'round', lineJoin:'round'
+    };
+    return {
+      color:ROAD_SPEED_COLORS[value] || '#56657e', weight:4, opacity:.95,
+      dashArray:'7 8', lineCap:'butt', lineJoin:'round'
+    };
+  }
+
+  function roadReferencePopup(kind,feature) {
+    const properties=feature?.properties || {};
+    const street=properties.STREET || 'Street segment';
+    const ref=ROAD_REFERENCES[kind];
+    const designation=properties[ref.field] || 'Not listed';
+    return `<div class="popup-title">${escapeHtml(street)}</div>`+
+      `<div class="popup-row"><span class="popup-label">${kind==='classes'?'Class':'Speed limit'}</span>${escapeHtml(designation)}</div>`+
+      `<div class="road-reference-source">City of Boulder · published road characteristics</div>`;
+  }
+
+  async function ensureRoadLayerLoaded(kind) {
+    if (roadLoaded[kind]) return true;
+    if (roadLoading[kind]) return roadLoading[kind];
+    const ref=ROAD_REFERENCES[kind];
+    const checkbox=kind==='classes'?els.layerStreetClasses:els.layerSpeedLimits;
+    const previousStatus=els.roadStatus.textContent;
+    els.roadStatus.textContent=`Loading ${ref.label.toLowerCase()} from the City…`;
+    els.roadStatus.hidden=false;
+    const loading=(async()=>{
+      // The ArcGIS service limits records per response; request every page so
+      // the map does not silently omit street segments after the first 1,000.
+      const features=[];
+      const pageSize=1000;
+      for (let offset=0; offset<25000; offset+=pageSize) {
+        const params=new URLSearchParams({
+          where:'1=1', outFields:'STREET,'+ref.field,
+          returnGeometry:'true', outSR:'4326', f:'geojson',
+          resultOffset:String(offset), resultRecordCount:String(pageSize)
+        });
+        const response=await fetch(`${ROAD_SERVICE_ROOT}/${ref.id}/query?${params}`);
+        if (!response.ok) throw new Error(`City GIS returned ${response.status}`);
+        const data=await response.json();
+        if (data?.error) throw new Error(data.error.message || 'City GIS query failed');
+        if (!Array.isArray(data?.features)) throw new Error('City GIS returned an unexpected map format');
+        features.push(...data.features.filter(f=>f?.geometry));
+        if (data.features.length<pageSize && !data.exceededTransferLimit) break;
+        if (offset+pageSize>=25000) throw new Error('The road dataset exceeded the display limit');
+      }
+      if (!features.length) throw new Error('No street segments were returned');
+      roadLayers[kind].clearLayers();
+      roadLayers[kind].addData({type:'FeatureCollection',features});
+      roadLoaded[kind]=true;
+      if (checkbox.checked) toggleLayer(roadLayers[kind],true);
+      const other=kind==='classes'?'speeds':'classes';
+      const count=features.length.toLocaleString();
+      els.roadStatus.textContent=`${ref.label}: ${count} City street segments loaded.`;
+      els.roadStatus.hidden=false;
+      return true;
+    })().catch(error=>{
+      console.warn(`${ref.label} load failed`,error);
+      roadLoaded[kind]=false;
+      roadLayers[kind].clearLayers();
+      els.roadStatus.textContent=`${ref.label} unavailable: ${error?.message || 'Unable to reach the City service'}.`;
+      els.roadStatus.hidden=false;
+      els.roadStatus.classList.add('error');
+      return false;
+    }).finally(()=>{roadLoading[kind]=null;});
+    els.roadStatus.classList.remove('error');
+    roadLoading[kind]=loading;
+    return loading;
+  }
+
   async function ensureConeZonesLoaded() {
     if (coneZonesLoaded) return true;
     if (coneZonesLoading) return coneZonesLoading;
@@ -1525,7 +1641,7 @@
   }
 
   function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(needsLocationReview).length; els.locationReviewCount.textContent=state.permits.filter(needsLocationReview).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); toggleLayer(roadLayers.classes,els.layerStreetClasses.checked && roadLoaded.classes); toggleLayer(roadLayers.speeds,els.layerSpeedLimits.checked && roadLoaded.speeds); }
   function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
