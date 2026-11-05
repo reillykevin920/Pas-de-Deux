@@ -292,3 +292,14 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .road-legend-item{display:flex;align-items:center;gap:7px;font-size:10px;line-height:1.25;color:var(--muted)}
 .road-legend-item i{width:16px;height:0;flex:0 0 16px;border-top:var(--road-weight) solid var(--road-color);filter:drop-shadow(0 0 1px rgba(0,0,0,.12))}
 .road-class-key{border-top:3px solid #d000a1}
+
+/* v3.1: Cone Zones legend swatch follows the user-selected overlay color. */
+#mapKeyBody .cone-key{background:color-mix(in srgb,var(--cone-accent,#c5283d) 20%,transparent);border-color:var(--cone-accent,#c5283d)}
+.cone-zone-source::before{background:var(--cone-accent,#c5283d)}
+
+/* v3.2: two independently queryable, independently legended street groups. */
+.road-local-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:2px solid #9b9ca1}
+.road-legend-group{padding-top:2px}
+.road-legend-group + .road-legend-group{border-top:1px solid var(--line);padding-top:9px}
+.road-legend-heading{font-size:10px;font-weight:750;color:var(--ink);padding:3px 0 8px}
+.road-status-group .layer-status + .layer-status{margin-top:5px}

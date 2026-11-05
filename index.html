@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-app-version="3.0.0">
+<html lang="en" data-theme="light" data-app-version="3.2.0">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="./styles.css?v=3.0.0" />
+  <link rel="stylesheet" href="./styles.css?v=3.2.0" />
 </head>
 <body>
   <header class="appbar">
@@ -64,10 +64,12 @@
           <label class="toggle-row"><input id="layerVenueContext" type="checkbox" /><span>500-ft venue context</span></label>
           <label class="toggle-row"><input id="layerCorridors" type="checkbox" checked /><span>Corridors</span></label>
           <label class="toggle-row"><input id="layerConeZones" type="checkbox" /><span>Cone Zones</span></label>
-          <label class="toggle-row"><input id="layerStreetClasses" type="checkbox" /><span>Street classifications</span></label>
+          <label class="toggle-row"><input id="layerMajorStreets" type="checkbox" /><span>Major streets</span></label>
+          <label class="toggle-row"><input id="layerLocalStreets" type="checkbox" /><span>Local / other streets</span></label>
         </div>
         <div id="roadStatus" class="road-status-group" hidden aria-live="polite">
-          <div id="roadClassStatus" class="layer-status" hidden></div>
+          <div id="roadMajorStatus" class="layer-status" hidden></div>
+          <div id="roadLocalStatus" class="layer-status" hidden></div>
         </div>
         <details id="streetClassLegend" class="road-legend" hidden></details>
         <div id="coneZonesStatus" class="layer-status" hidden></div>
@@ -148,7 +150,7 @@
           <p class="buffer-editor-note">Shows the same 500-ft radius around each venue. Only the appearance changes.</p>
         </div>
         <div id="pinPaletteControls">
-          <span class="control-label">Marker color</span>
+          <span class="control-label" id="pinPaletteLabel">Marker color</span>
           <div id="pinPalette" class="pin-palette" role="group" aria-label="Default marker color"></div>
           <label class="custom-color"><span>Custom</span><input id="pinColorCustom" type="color" value="#1e779e" aria-label="Custom marker color" /></label>
         </div>
@@ -247,6 +249,6 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
-  <script src="./app.js?v=3.0.0"></script>
+  <script src="./app.js?v=3.2.0"></script>
 </body>
 </html>

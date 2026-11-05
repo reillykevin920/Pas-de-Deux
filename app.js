@@ -34,11 +34,21 @@
     'Other': {color:'#70777f',weight:1.2},
     'Unknown': {color:'#6c737b',weight:1.2}
   };
-  // Only fetch road segments around the currently visible map, not the whole
-  // municipal network. No extra mapping libraries, API keys or server needed.
-  let roadRequest = null;
-  let roadRequestSerial = 0;
-  let roadViewportLoaded = null;
+  // Each independent road toggle fetches only the street types it displays.
+  // The second group deliberately includes unexpected/null City classifications
+  // so new values do not silently disappear from the reference map.
+  const ROAD_GROUPS = {
+    major: {
+      checkbox:'layerMajorStreets', status:'roadMajorStatus', label:'Major streets',
+      values:['Principal Arterial','Minor Arterial','Collector','Expressway','Freeway','Ramp'],
+      layer:null, controller:null, serial:0, loadedBounds:null, requestBounds:null
+    },
+    local: {
+      checkbox:'layerLocalStreets', status:'roadLocalStatus', label:'Local / other streets',
+      values:['Residential','Alley','Pedestrian Mall','Recreational Trail','Private','Agriculture','Unknown','Other'],
+      layer:null, controller:null, serial:0, loadedBounds:null, requestBounds:null
+    }
+  };
   let roadViewportTimer = null;
 
 
@@ -63,7 +73,7 @@
   ];
   const STATUS_VALUES = ['In Review','Upcoming','Active','Closed'];
   const PIN_COLORS = ['#2563eb','#ea580c','#be123c','#0f766e','#7c3aed','#111827','#eab308','#e11d48'];
-  const DEFAULT_APPEARANCE = { theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium', bufferColor:'#8b5cf6', bufferOpacity:.25 };
+  const DEFAULT_APPEARANCE = { coneZonesColor:'#c5283d', theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium', bufferColor:'#8b5cf6', bufferOpacity:.25 };
 
   let state = migrateState(loadState());
   let map;
@@ -72,7 +82,7 @@
   let venueBuildingLayer;
   let venueContextLayer;
   let venueMarkersReady = false;
-  let activeMarkerEditor = 'permits'; // permits | venues | buffers
+  let activeMarkerEditor = 'permits'; // permits | venues | buffers | coneZones
   let corridorLayer;
   let corridorPreviewLayer;
   let corridorEndpointLayer;
@@ -80,7 +90,6 @@
   let coneZonesLoaded = false;
   let coneZonesLoading = null;
   let coneZonesFeatureCount = 0;
-  let roadClassesLayer;
   let currentPermitId = null;
   let currentCorridorId = null;
   let pendingCorridor = null;
@@ -108,6 +117,7 @@
     loadVerifiedVenues();
     initStatusFilters();
     initAppearanceControls();
+    repaintConeZones();
     bindUI();
     // Corridor controls are modal/contextual; never leave the map banner visible at rest.
     exitCorridorMapMode(false);
@@ -131,10 +141,10 @@
   function cacheElements() {
     [
       'visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
-      'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerStreetClasses','roadStatus','roadClassStatus','streetClassLegend','fitAllBtn',
+      'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerMajorStreets','layerLocalStreets','roadStatus','roadMajorStatus','roadLocalStatus','streetClassLegend','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
-      'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','bufferPaletteControls','bufferColor','bufferOpacity','bufferOpacityLabel','pinGeometryControls','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
+      'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','pinPaletteLabel','bufferPaletteControls','bufferColor','bufferOpacity','bufferOpacityLabel','pinGeometryControls','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
       'deletePermitBtn','streetScopeDialog','streetScopeForm','selectedStreetName','wholeStreetBtn','streetSectionBtn','corridorDialog','corridorForm',
       'unlocatedDialog','closeUnlocatedBtn','unlocatedList'
     ].forEach(id => els[id] = document.getElementById(id));
@@ -188,15 +198,19 @@
   function openMarkerEditor(category) {
     activeMarkerEditor=category;
     const isBuffer=category==='buffers';
-    const data=isBuffer?null:appearanceFor(category);
-    els.markerEditorTitle.textContent=isBuffer?'500-ft venue context':category==='venues'?'Sundance site markers':'Permit markers';
+    const isConeZones=category==='coneZones';
+    const data=isBuffer?null:(isConeZones?{color:state.appearance.coneZonesColor}:appearanceFor(category));
+    els.markerEditorTitle.textContent=isBuffer?'500-ft venue context':isConeZones?'Cone Zones':category==='venues'?'Sundance site markers':'Permit markers';
     els.markerEditor.querySelector('.marker-editor-help').textContent=isBuffer
       ? 'A visible 500-ft radius around each Sundance venue. This layer does not change permit impact assessments.'
+      : isConeZones ? 'Change the Cone Zones overlay color. City project data and locations stay unchanged.'
       : 'These are default map styles. Existing permit records stay unchanged.';
     els.bufferPaletteControls.hidden=!isBuffer;
     els.pinColorModeWrap.hidden=category!=='permits';
     els.pinPaletteControls.hidden=isBuffer || (category==='permits' && state.appearance.pinColorMode==='status');
-    els.pinGeometryControls.hidden=isBuffer;
+    els.pinPaletteLabel.textContent=isConeZones?'Cone Zones color':'Marker color';
+    els.pinColorCustom.setAttribute('aria-label',isConeZones?'Custom Cone Zones color':'Custom marker color');
+    els.pinGeometryControls.hidden=isBuffer || isConeZones;
     if (isBuffer) {
       els.bufferColor.value=state.appearance.bufferColor;
       els.bufferOpacity.value=Math.round(state.appearance.bufferOpacity*100);
@@ -216,7 +230,10 @@
 
   function updateAppearance({color}={}) {
     const a=state.appearance;
-    if (activeMarkerEditor==='venues') {
+    if (activeMarkerEditor==='coneZones') {
+      a.coneZonesColor=color||els.pinColorCustom.value;
+      repaintConeZones();
+    } else if (activeMarkerEditor==='venues') {
       a.venueColor=color||els.pinColorCustom.value;
       a.venueShape=els.pinShape.value;
       a.venueSize=els.pinSize.value;
@@ -229,7 +246,8 @@
       els.pinPaletteControls.hidden=a.pinColorMode==='status';
       renderPermits();
     }
-    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===(activeMarkerEditor==='venues'?a.venueColor:a.pinColor))));
+    const selectedColor=activeMarkerEditor==='coneZones'?a.coneZonesColor:activeMarkerEditor==='venues'?a.venueColor:a.pinColor;
+    els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===selectedColor)));
     saveState();updateLegend();
   }
 
@@ -287,8 +305,11 @@
         <span class="legend-edit-left"><i class="legend-buffer-swatch" style="--buffer-swatch:${a.bufferColor};--buffer-opacity:${a.bufferOpacity}"></i><span>500-ft venue context</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
       </button>
       <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
-      <div class="legend-static-row"><i class="cone-key"></i><span>Cone Zones</span></div>
-      ${els.layerStreetClasses.checked ? `<div class="legend-static-row"><i class="road-class-key"></i><span>Street classifications · color-coded</span></div>` : ''}
+      <button type="button" class="legend-edit-row" data-style-category="coneZones" aria-label="Edit Cone Zones overlay color" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='coneZones'}">
+        <span class="legend-edit-left"><i class="cone-key" style="--cone-accent:${a.coneZonesColor}"></i><span>Cone Zones</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
+      </button>
+      ${els.layerMajorStreets.checked ? `<div class="legend-static-row"><i class="road-class-key"></i><span>Major streets · color-coded</span></div>` : ''}
+      ${els.layerLocalStreets.checked ? `<div class="legend-static-row"><i class="road-local-key"></i><span>Local / other streets · color-coded</span></div>` : ''}
       <div class="legend-note">Click roads for City designations; click marker categories to customize.</div>`;
   }
 
@@ -310,11 +331,13 @@
     // Classification reference is drawn underneath working corridors and permits.
     map.createPane('pdd-road-classes');
     map.getPane('pdd-road-classes').style.zIndex='350';
-    roadClassesLayer=L.geoJSON(null,{
-      pane:'pdd-road-classes',
-      style:feature=>roadClassStyle(feature),
-      onEachFeature:(feature,layer)=>layer.bindPopup(roadClassPopup(feature),{maxWidth:320})
-    });
+    for (const group of Object.values(ROAD_GROUPS)) {
+      group.layer=L.geoJSON(null,{
+        pane:'pdd-road-classes',
+        style:feature=>roadClassStyle(feature),
+        onEachFeature:(feature,layer)=>layer.bindPopup(roadClassPopup(feature),{maxWidth:320})
+      });
+    }
     // The viewport query is deliberately deferred unless the user enables it.
     map.on('moveend',()=>scheduleRoadViewportQuery());
     permitCluster.addTo(map);
@@ -416,18 +439,16 @@
       updateLayerVisibility();
       if (els.layerConeZones.checked) await ensureConeZonesLoaded();
     });
-    els.layerStreetClasses.addEventListener('change',()=>{
-      updateLayerVisibility();
-      updateRoadLegends();
-      if (els.layerStreetClasses.checked) scheduleRoadViewportQuery(true);
-      else {
-        clearTimeout(roadViewportTimer);
-        if (roadRequest) roadRequest.abort();
-        roadRequest=null;
-        roadRequestSerial++;
-        els.roadStatus.hidden=true;
-      }
-    });
+    for (const group of Object.values(ROAD_GROUPS)) {
+      els[group.checkbox].addEventListener('change',()=>{
+        if (!els[group.checkbox].checked) {
+          stopRoadGroup(group);
+        }
+        updateLayerVisibility();
+        updateRoadLegends();
+        if (els[group.checkbox].checked) scheduleRoadViewportQuery(true);
+      });
+    }
     ['searchFilter','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter']
       .forEach(id => els[id].addEventListener('input', scheduleRender));
     els.statusFilters.addEventListener('change', scheduleRender);
@@ -1142,22 +1163,35 @@
       `<div class="road-reference-source">City of Boulder · Street Centerline GIS</div>`;
   }
 
-  function roadStatus(message,error=false) {
-    if (!els.layerStreetClasses.checked) return;
+  function anyRoadGroupEnabled() {
+    return Object.values(ROAD_GROUPS).some(g=>els[g.checkbox]?.checked);
+  }
+
+  function roadStatus(group,message,error=false) {
+    const el=els[group.status];
+    if (!el || !els[group.checkbox].checked) return;
     els.roadStatus.hidden=false;
-    els.roadClassStatus.hidden=false;
-    els.roadClassStatus.textContent=message;
-    els.roadClassStatus.classList.toggle('error',error);
+    el.hidden=false;
+    el.textContent=`${group.label}: ${message}`;
+    el.classList.toggle('error',error);
   }
 
   function updateRoadLegends() {
+    const groups=Object.values(ROAD_GROUPS).filter(g=>els[g.checkbox].checked);
+    els.roadStatus.hidden=!groups.length;
+    for (const group of Object.values(ROAD_GROUPS)) {
+      els[group.status].hidden=!els[group.checkbox].checked;
+    }
     const container=els.streetClassLegend;
-    container.hidden=!els.layerStreetClasses.checked;
-    if (els.layerStreetClasses.checked) {
-      container.innerHTML='<summary>City street classifications <span aria-hidden="true">⌄</span></summary>'+
-        `<div class="road-legend-items">${Object.entries(ROAD_CLASS_STYLES).map(([value,style])=>
-          `<div class="road-legend-item"><i style="--road-color:${style.color};--road-weight:${Math.max(2,style.weight)}px"></i><span>${escapeHtml(value)}</span></div>`
-        ).join('')}</div>`;
+    container.hidden=!groups.length;
+    if (groups.length) {
+      container.innerHTML='<summary>City street classifications <span aria-hidden="true">⌄</span></summary>'+groups.map(group=>
+        `<div class="road-legend-group"><div class="road-legend-heading">${group.label}</div><div class="road-legend-items">`+
+        group.values.map(value=>{
+          const style=ROAD_CLASS_STYLES[value];
+          return `<div class="road-legend-item"><i style="--road-color:${style.color};--road-weight:${Math.max(2,style.weight)}px"></i><span>${escapeHtml(value)}</span></div>`;
+        }).join('')+'</div></div>'
+      ).join('');
     }
     updateLegend();
   }
@@ -1173,90 +1207,96 @@
     );
   }
 
-  function scheduleRoadViewportQuery(immediate=false) {
-    if (!els.layerStreetClasses?.checked || !map) return;
-    clearTimeout(roadViewportTimer);
-    roadViewportTimer=setTimeout(()=>void loadRoadViewport(),immediate?0:220);
+  function stopRoadGroup(group) {
+    if (group.controller) group.controller.abort();
+    group.controller=null;
+    group.requestBounds=null;
+    group.serial++;
   }
 
-  async function loadRoadViewport() {
-    if (!els.layerStreetClasses.checked) return;
+  function scheduleRoadViewportQuery(immediate=false) {
+    if (!anyRoadGroupEnabled() || !map) return;
+    clearTimeout(roadViewportTimer);
+    roadViewportTimer=setTimeout(()=>{
+      for (const group of Object.values(ROAD_GROUPS)) {
+        if (els[group.checkbox].checked) void loadRoadGroup(group);
+      }
+    },immediate?0:220);
+  }
+
+  async function loadRoadGroup(group) {
+    if (!els[group.checkbox].checked) return;
     if (map.getZoom()<12) {
-      roadStatus('Zoom in to display street classifications.');
-      // Stop any previously running request for a different zoom/area.
-      if (roadRequest) roadRequest.abort();
-      roadRequestSerial++;
-      roadRequest=null;
-      roadViewportLoaded=null;
-      roadClassesLayer.clearLayers();
+      stopRoadGroup(group);
+      group.loadedBounds=null;
+      group.layer.clearLayers();
+      roadStatus(group,'Zoom in to display street classifications.');
       return;
     }
+    const view=map.getBounds();
+    if (group.loadedBounds?.contains(view)) return;
+    // Avoid restarting an in-flight request for an already-covered view.
+    if (group.controller && group.requestBounds?.contains(view)) return;
+    stopRoadGroup(group);
     const bounds=roadQueryBounds();
-    // A redraw isn't necessary when the user pans inside the last fetched area.
-    if (roadViewportLoaded && roadViewportLoaded.contains(map.getBounds())) return;
-    if (roadRequest) roadRequest.abort();
     const controller=new AbortController();
-    roadRequest=controller;
-    const serial=++roadRequestSerial;
-    const west=bounds.getWest(),south=bounds.getSouth();
-    const east=bounds.getEast(),north=bounds.getNorth();
-    const envelope=JSON.stringify({xmin:west,ymin:south,xmax:east,ymax:north,spatialReference:{wkid:4326}});
-    // Main roads arrive first; residential and minor segments follow.
-    // Query the actual City of Boulder street centerline GIS, not an unrelated
-    // ArcGIS road service. Do not block the first batch on the entire download.
-    const priority=['Principal Arterial','Minor Arterial','Collector','Expressway','Freeway','Ramp'];
-    const priorityIn=priority.map(v=>`'${v}'`).join(',');
-    const categories=[
-      `STREETCLASS IN (${priorityIn})`,
-      `STREETCLASS NOT IN (${priorityIn}) OR STREETCLASS IS NULL`
-    ];
+    group.controller=controller;
+    group.requestBounds=bounds;
+    const serial=++group.serial;
+    const envelope=JSON.stringify({
+      xmin:bounds.getWest(),ymin:bounds.getSouth(),
+      xmax:bounds.getEast(),ymax:bounds.getNorth(),
+      spatialReference:{wkid:4326}
+    });
+    const majorValues=ROAD_GROUPS.major.values.map(v=>`'${v}'`).join(',');
+    // The local toggle covers the remaining City values too (including null).
+    const where=group===ROAD_GROUPS.major
+      ? `STREETCLASS IN (${majorValues})`
+      : `(STREETCLASS NOT IN (${majorValues}) OR STREETCLASS IS NULL)`;
     let count=0;
-    let began=false;
-    roadStatus('Loading City street classifications for this map area…');
+    let started=false;
+    roadStatus(group,'Loading streets in this map area…');
     try {
-      for (const where of categories) {
-        let offset=0;
-        const size=500;
-        while (offset<12000) {
-          if (controller.signal.aborted || serial!==roadRequestSerial) return;
-          const params=new URLSearchParams({
-            f:'geojson',where,outFields:'OBJECTID,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS',
-            geometry:envelope,geometryType:'esriGeometryEnvelope',inSR:'4326',
-            spatialRel:'esriSpatialRelIntersects',returnGeometry:'true',outSR:'4326',
-            orderByFields:'OBJECTID ASC',resultOffset:String(offset),resultRecordCount:String(size)
-          });
-          const timeout=AbortSignal.timeout ? AbortSignal.timeout(15000) : null;
-          // One fetch per page; errors are displayed rather than silent spinning.
-          const response=await fetch(`${ROAD_LAYER_URL}?${params}`,{
-            signal:timeout && AbortSignal.any ? AbortSignal.any([controller.signal,timeout]) : controller.signal
-          });
-          if (!response.ok) throw new Error(`City GIS returned HTTP ${response.status}`);
-          const data=await response.json();
-          if (data.error) throw new Error(data.error.message || 'City GIS rejected the request');
-          if (!Array.isArray(data.features)) throw new Error('City GIS returned no usable map data');
-          if (controller.signal.aborted || serial!==roadRequestSerial) return;
-          if (!began) { roadClassesLayer.clearLayers(); began=true; }
-          const features=data.features.filter(f=>f?.geometry);
-          if (features.length) roadClassesLayer.addData({type:'FeatureCollection',features});
-          count+=features.length;
-          roadStatus(`${count.toLocaleString()} street segments displayed${data.exceededTransferLimit||data.features.length===size?' · loading more…':''}`);
-          offset+=data.features.length;
-          if (data.features.length===0 || (data.features.length<size && !data.exceededTransferLimit)) break;
-        }
-        if (offset>=12000) throw new Error('Too many road segments for this view; zoom in a little');
+      let offset=0;
+      const pageSize=500;
+      while (offset<12000) {
+        if (controller.signal.aborted || serial!==group.serial) return;
+        const params=new URLSearchParams({
+          f:'geojson',where,outFields:'OBJECTID,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS',
+          geometry:envelope,geometryType:'esriGeometryEnvelope',inSR:'4326',
+          spatialRel:'esriSpatialRelIntersects',returnGeometry:'true',outSR:'4326',
+          orderByFields:'OBJECTID ASC',resultOffset:String(offset),resultRecordCount:String(pageSize)
+        });
+        const timeout=AbortSignal.timeout ? AbortSignal.timeout(15000) : null;
+        const response=await fetch(`${ROAD_LAYER_URL}?${params}`,{
+          signal:timeout && AbortSignal.any ? AbortSignal.any([controller.signal,timeout]) : controller.signal
+        });
+        if (!response.ok) throw new Error(`City GIS returned HTTP ${response.status}`);
+        const data=await response.json();
+        if (data.error) throw new Error(data.error.message || 'City GIS rejected the request');
+        if (!Array.isArray(data.features)) throw new Error('City GIS returned no usable map data');
+        if (controller.signal.aborted || serial!==group.serial) return;
+        if (!started) { group.layer.clearLayers(); started=true; }
+        const features=data.features.filter(f=>f?.geometry);
+        if (features.length) group.layer.addData({type:'FeatureCollection',features});
+        count+=features.length;
+        roadStatus(group,`${count.toLocaleString()} segments displayed${data.exceededTransferLimit||data.features.length===pageSize?' · loading more…':''}`);
+        offset+=data.features.length;
+        if (!data.features.length || (data.features.length<pageSize && !data.exceededTransferLimit)) break;
       }
+      if (offset>=12000) throw new Error('Too many road segments for this view; zoom in a little');
       if (!count) {
-        roadClassesLayer.clearLayers();
-        throw new Error('Boulder returned no street segments for this map area');
+        group.layer.clearLayers();
+        throw new Error('Boulder returned no streets for this group in this map area');
       }
-      roadViewportLoaded=bounds;
-      roadStatus(`${count.toLocaleString()} City street segments displayed.`);
+      group.loadedBounds=bounds;
+      roadStatus(group,`${count.toLocaleString()} City street segments displayed.`);
     } catch (error) {
-      if (controller.signal.aborted || serial!==roadRequestSerial) return;
-      console.warn('Street classifications query failed',error);
-      roadStatus(count?`${count.toLocaleString()} streets visible; additional streets unavailable (${error.message}).`:`Could not load street classifications: ${error.message}.`,true);
+      if (controller.signal.aborted || serial!==group.serial) return;
+      console.warn(`${group.label} query failed`,error);
+      roadStatus(group,count?`${count.toLocaleString()} visible; additional streets unavailable (${error.message}).`:`Could not load streets: ${error.message}.`,true);
     } finally {
-      if (serial===roadRequestSerial) roadRequest=null;
+      if (group.serial===serial) {group.controller=null; group.requestBounds=null;}
     }
   }
 
@@ -1531,17 +1571,33 @@
     const layer = L.geoJSON({ type:'FeatureCollection', features }, {
       pane:'overlayPane',
       style: feature => coneZoneStyle(feature),
-      pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius:6, color:'#fff', weight:2, fillColor:'#d66b24', fillOpacity:.95 }),
+      pointToLayer: (feature, latlng) => L.circleMarker(latlng, coneZonePointStyle()),
       onEachFeature: (feature, leafletLayer) => leafletLayer.bindPopup(coneZonePopup(feature, layerTitle, popupConfig), { maxWidth:430, maxHeight:480, className:'cone-zone-popup' })
     });
     layer.addTo(coneZonesLayer);
     return features.length;
   }
 
+  function coneZonePointStyle() {
+    return { radius:6, color:'#fff', weight:2, fillColor:state.appearance.coneZonesColor, fillOpacity:.95 };
+  }
+
   function coneZoneStyle(feature) {
-    const type = feature?.geometry?.type || '';
-    if (/Polygon/i.test(type)) return { color:'#c65d1d', weight:2, opacity:.9, fillColor:'#e39a54', fillOpacity:.16 };
-    return { color:'#d66b24', weight:4, opacity:.88 };
+    const color=state.appearance.coneZonesColor;
+    const type=feature?.geometry?.type || '';
+    if (/Polygon/i.test(type)) return { color, weight:2, opacity:.9, fillColor:color, fillOpacity:.16 };
+    return { color, weight:4, opacity:.88 };
+  }
+
+  function repaintConeZones() {
+    // Restyle already-fetched geometries immediately; never trigger a GIS reload.
+    const repaint=layer=>{
+      if (layer instanceof L.CircleMarker) layer.setStyle(coneZonePointStyle());
+      else if (layer instanceof L.Path) layer.setStyle(coneZoneStyle(layer.feature));
+      else if (typeof layer.eachLayer==='function') layer.eachLayer(repaint);
+    };
+    if (coneZonesLayer) coneZonesLayer.eachLayer(repaint);
+    document.documentElement.style.setProperty('--cone-accent',state.appearance.coneZonesColor);
   }
 
   function coneZonePopup(feature, layerTitle, popupConfig={}) {
@@ -1711,7 +1767,7 @@
   }
 
   function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(needsLocationReview).length; els.locationReviewCount.textContent=state.permits.filter(needsLocationReview).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); toggleLayer(roadClassesLayer,els.layerStreetClasses.checked); }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); for (const group of Object.values(ROAD_GROUPS)) toggleLayer(group.layer,els[group.checkbox].checked); }
   function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
@@ -1736,7 +1792,7 @@
       const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
       if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
       if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); renderVenueContext(); renderVenueMarkers(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
+      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); repaintConeZones(); renderVenueContext(); renderVenueMarkers(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
     } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
   }
 
@@ -1777,7 +1833,7 @@
 
   function migrateState(input) {
     const candidate={...DEFAULT_APPEARANCE,...(input.appearance||{})};
-    const appearance={theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium',bufferColor:/^#[0-9a-f]{6}$/i.test(candidate.bufferColor)?candidate.bufferColor:'#8b5cf6',bufferOpacity:Number.isFinite(Number(candidate.bufferOpacity))?Math.min(.5,Math.max(.10,Number(candidate.bufferOpacity))):.25};
+    const appearance={coneZonesColor:/^#[0-9a-f]{6}$/i.test(candidate.coneZonesColor)?candidate.coneZonesColor:'#c5283d',theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium',bufferColor:/^#[0-9a-f]{6}$/i.test(candidate.bufferColor)?candidate.bufferColor:'#8b5cf6',bufferOpacity:Number.isFinite(Number(candidate.bufferOpacity))?Math.min(.5,Math.max(.10,Number(candidate.bufferOpacity))):.25};
     const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[],appearance};
     for (const p of output.permits) {
       if (p.status==='Application') p.status='Upcoming';
