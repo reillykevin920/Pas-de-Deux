@@ -1,23 +1,20 @@
-# Pas de Deux — v2.8.0
+# Pas de Deux v2.9 — Street classification performance fix
 
-Interactive Boulder event/permit coordination map. Single-workstation/local-browser build; future shared permit-tech deployment will require authenticated shared storage.
+**What changed**
 
-## Updated in v2.8 — published City road characteristics
+- Removed the Speed limits layer completely.
+- Street classifications now query only the currently viewed area instead of downloading the whole Boulder road network.
+- Arterials and collectors draw first; local streets follow progressively. When the map is moved to an area outside the previously fetched coverage, it loads that area on demand.
+- Fixed a bug that caused the classification layer to disappear during other map updates until the entire download finished.
+- Preserved the City's published classification colors, categories and clickable street information.
+- Added a 15-second timeout to GIS requests (in browsers supporting `AbortSignal.any/timeout`) and clear error messages.
+- At zoom levels wider than 12, zoom in to fetch classification streets rather than overloading the application.
 
-- **Street classifications** and **Speed limits** are two new optional map overlays. Both read the City's publicly published [RoadCharacteristics_1 FeatureServer](https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer), layers 2 and 3.
-- Toggle either layer under **Map layers**. Each loads on demand and displays the City's line segments as solid colored classifications or dashed color-coded speed limits. Click a segment to see its City-provided street name and designation.
-- The underlying City layers are *references*, not official designated event corridors. User-defined operational corridors stay independent, editable, and locally stored. The new layers do not change permit data or automatically assess impacts.
-- Data loads from City GIS on first toggle per page session; reload the app to request the latest published version. ArcGIS limits results to 1,000 features per response, so the app requests additional pages instead of silently dropping roads. Neither layer needs an API key.
-- **Validation limitation:** Verified both public layers advertise polyline geometry, classification/speed attributes, paginated querying and GeoJSON support. The service's actual feature-query responses could not be executed from this environment, so a hosted browser test of both toggles is still required.
+**Unchanged:** City Cone Zones, permits, venues, corridor editing, local storage and existing appearance settings.
 
-## Changes in this release
+**Public GIS source:** https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer/2
 
-- **Visible permanent delete:** **Clear all permits** now sits immediately under the permit totals, not hidden inside the Data dropdown. It opens a confirmation showing how many local permit records will be deleted. You must enter `CLEAR` to confirm; Cancel and the dialog close button leave everything intact. This removes **all permits**, including hidden, closed, archived, filtered-out, and unlocated records. It does **not** affect venues, corridors, Cone Zones or map appearance. A backup button is available in the confirmation dialog.
-- **Disconnects the permit folder after clearing:** Clearing also removes the saved folder handle (read-only connection) so the next import is deliberate. A newly connected/synced folder will re-import filenames; deleted notes, assessments and edited coordinates are recoverable only from backup. No PDF contents are ever opened by Pas de Deux.
-- **500-ft venue context is now conspicuous** at useful zoom levels: a 3-pixel solid outline and stronger translucent fill, rather than the old nearly invisible dashed outline.
-- **Map key customization:** Click **500-ft venue context → Edit** inside the map key to set its color and fill strength (10–50%). Changes apply immediately and are saved along with the rest of the app appearance. The buffer's **500-ft physical radius stays constant** and never assigns impact to a permit.
-- **Retains v2.5.1 map layout and Light/Dark choices**, permit/Sundance category marker customization, verified 12-site Sundance venue markers, street-aware corridors, and City Cone Zones reference features.
-- Versioned assets (`app.js?v=2.7.0`, `styles.css?v=2.7.0`) ensure this HTML points to the matching release after deployment.
+**Testing:** JavaScript syntax and browser interaction tests passed with simulated public GIS responses, including toggling, panning, colors, and persistence during re-renders. Live retrieval speed from Boulder's GIS endpoint cannot be verified from the build environment and should be checked in the deployed browser.
 
 ## Existing behavior preserved
 
@@ -30,25 +27,9 @@ Interactive Boulder event/permit coordination map. Single-workstation/local-brow
 
 ## Deployment — GitHub Pages / Cloudflare Pages
 
-1. **Before upgrading, use Data → Export backup on the existing working app.** Keep the JSON file somewhere safe.
-2. Replace the four files at the root of the existing repository: `index.html`, `app.js`, `styles.css`, and `README.md`. Commit/publish using your current workflow. No Node, local build step, or API key required.
-3. Open the **same hosted URL** in the **same browser/profile** to retain local permits/corridors. Do not change hostname/origin. After publishing, force refresh once on Mac with **Cmd + Shift + R** if an old page is still cached.
-4. Confirm you see Sundance sites immediately, that **Focus on festival sites** zooms to all 12, that Light and Dark visibly switch the sidebar/background/map tiles, and that clicking the Permits, Sundance sites, or 500-ft venue context rows in the Map key changes their respective appearance.
-5. Toggle Cone Zones to confirm the public City service is available from your network. Existing annotations and corridors should remain intact.
+1. Export a JSON backup from the currently deployed app before updating.
+2. Replace the four root repository files (`index.html`, `app.js`, `styles.css`, `README.md`) and commit.
+3. Open your existing URL in your existing browser profile to retain local permit/corridor records.
+4. Toggle **Street classifications** and confirm the map draws arterials/collectors followed by local streets. Pan to a new area to verify loading there.
+5. If your browser shows an old release, force-refresh with Cmd + Shift + R.
 
-## Sources and limitations
-
-- [2027 Sundance official venue roster](https://www.sundance.org/blogs/2027-sundance-film-festival-to-take-place-january-21-31-in-boulder-colorado/)
-- [SundanceBoCo venue map](https://sundanceboco.com/venues) — independent/unofficial cross-reference
-- Basemap: [OpenStreetMap](https://www.openstreetmap.org), publicly served tiles with OSM attribution.
-- Building footprints, address resolution, street centerlines: City's public ArcGIS REST services. External datasets and the City's public Cone Zones map may temporarily be unavailable. Venue pins are no longer dependent on those background GIS calls.
-
-**Testing:** The page's real JavaScript/CSS was exercised in a browser using local stand-ins for external mapping libraries/services (checking theme switching, appearance editing, 12-venue initialization, and no startup errors). Regression checks cover the 16 sample permit *filenames* and in-browser confirmation/cancel/clear flows, including archived, hidden and unlocated records and corridor preservation. A complete live hosted-browser test against the real Boulder GIS, basemap, and Cone Zones endpoints must still be performed after publishing.
-
-## v2.8 improvements
-
-- Street classification and speed-limit overlays use the actual unique-value renderer from City ArcGIS metadata, with source-verified fallback colors/line widths. The original City line symbols are solid.
-- Expandable legends show every class and speed category with its own color; this is map source symbology, not one color for all streets.
-- Each 1,000-record batch appears as it is loaded, rather than holding all streets back until the last network response. Individual status messages report loaded counts or errors.
-- Road designation layers remain reference overlays; they do not automatically define staff-approved special-event corridors or change permit records.
-- Boulder speed-limit source may omit default 20 mph neighborhood streets; this layer displays what the City publishes, not inferred limits.

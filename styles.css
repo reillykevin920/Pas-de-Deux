@@ -279,12 +279,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 #bufferOpacity{width:100%;accent-color:#8b5cf6;cursor:pointer}
 .buffer-editor-note{font-size:10px;line-height:1.45;color:var(--muted);margin:10px 0 2px}
 
-/* v2.7: City street classification/speed limit map references */
-.road-class-key,.road-speed-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:3px solid #ed23ac}
-.road-speed-key{border-top:3px dashed #8457f7}
+/* City street classification map reference */
+.road-class-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:3px solid #ff00c5}
 .road-reference-source{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);font-size:10px;color:#64748b}
 
-/* v2.8: preserve City's individual speed and road-class styles, show full key */
+/* Preserve City's individual road-class styles; show full key */
 .road-status-group .layer-status{margin-top:6px}
 .road-legend{background:var(--soft);border:1px solid var(--line);border-radius:8px;margin-top:8px;padding:0 9px;color:var(--ink)}
 .road-legend summary{cursor:pointer;padding:9px 0;font-weight:720;font-size:10.5px;display:flex;align-items:center;justify-content:space-between;list-style:none}
@@ -293,4 +292,3 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .road-legend-item{display:flex;align-items:center;gap:7px;font-size:10px;line-height:1.25;color:var(--muted)}
 .road-legend-item i{width:16px;height:0;flex:0 0 16px;border-top:var(--road-weight) solid var(--road-color);filter:drop-shadow(0 0 1px rgba(0,0,0,.12))}
 .road-class-key{border-top:3px solid #ff00c5}
-.road-speed-key{border-top:3px solid #32468f}

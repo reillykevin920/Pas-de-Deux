@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-app-version="2.8.0">
+<html lang="en" data-theme="light" data-app-version="2.9.0">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="./styles.css?v=2.8.0" />
+  <link rel="stylesheet" href="./styles.css?v=2.9.0" />
 </head>
 <body>
   <header class="appbar">
@@ -65,14 +65,11 @@
           <label class="toggle-row"><input id="layerCorridors" type="checkbox" checked /><span>Corridors</span></label>
           <label class="toggle-row"><input id="layerConeZones" type="checkbox" /><span>Cone Zones</span></label>
           <label class="toggle-row"><input id="layerStreetClasses" type="checkbox" /><span>Street classifications</span></label>
-          <label class="toggle-row"><input id="layerSpeedLimits" type="checkbox" /><span>Speed limits</span></label>
         </div>
         <div id="roadStatus" class="road-status-group" hidden aria-live="polite">
           <div id="roadClassStatus" class="layer-status" hidden></div>
-          <div id="roadSpeedStatus" class="layer-status" hidden></div>
         </div>
         <details id="streetClassLegend" class="road-legend" hidden></details>
-        <details id="speedLimitLegend" class="road-legend" hidden></details>
         <div id="coneZonesStatus" class="layer-status" hidden></div>
         <div id="venueStatus" class="layer-status venue-status" hidden></div>
         <div class="venue-quick"><button type="button" id="showVenuesBtn" class="venue-focus-button"><span><span class="venue-focus-mark"></span>Focus on festival sites</span><span aria-hidden="true">↗</span></button></div>
@@ -250,6 +247,6 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
-  <script src="./app.js?v=2.8.0"></script>
+  <script src="./app.js?v=2.9.0"></script>
 </body>
 </html>
