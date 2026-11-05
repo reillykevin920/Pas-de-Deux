@@ -14,18 +14,26 @@
   const STREET_QUERY = 'https://gis.bouldercolorado.gov/ags_svr3/rest/services/trans/StreetsSimple/MapServer/0/query';
   const CONE_ZONES_EXPERIENCE_ID = '45ea51935a18499281af2980bfa3b7e5';
   const ARCGIS_ITEMS_ROOT = 'https://www.arcgis.com/sharing/rest/content/items';
-  // The City's published Road Characteristics service; no account or API key.
-  // Layer 2 = functional classification, layer 3 = posted speed designation.
-  const ROAD_SERVICE_ROOT = 'https://services2.arcgis.com/AB4o41cT2GQ69z4k/ArcGIS/rest/services/RoadCharacteristics_1/FeatureServer';
+  // City's own Street Centerline service, already used for corridor selection.
+  // These are actual City of Boulder STREETCLASS categories; colors below are
+  // Pas de Deux display styling, NOT claimed to reproduce the ArcGIS Experience.
+  const ROAD_LAYER_URL = STREET_QUERY;
   const ROAD_CLASS_STYLES = {
-    'Principal Arterial': {color:'#ff00c5',weight:3},
-    'Minor Arterial': {color:'#267300',weight:2},
-    'Major Collector': {color:'#55ff00',weight:3},
-    'Minor Collector': {color:'#004da8',weight:1.5},
-    'Local': {color:'#9c9c9c',weight:.75},
-    'Limited Access': {color:'#bd7ebe',weight:1.5}
-  }; // City-published category styles, also shown in the map legend.
-  const ROAD_LAYER_URL = `${ROAD_SERVICE_ROOT}/2/query`;
+    'Principal Arterial': {color:'#d000a1',weight:4.5},
+    'Minor Arterial': {color:'#d65a14',weight:3.5},
+    'Collector': {color:'#0978bf',weight:3},
+    'Expressway': {color:'#6f42c1',weight:4.5},
+    'Freeway': {color:'#7934bc',weight:5},
+    'Ramp': {color:'#a97cd1',weight:2.75},
+    'Residential': {color:'#9b9ca1',weight:1.4},
+    'Alley': {color:'#abb2b9',weight:.8},
+    'Pedestrian Mall': {color:'#148866',weight:2.5},
+    'Recreational Trail': {color:'#2b9b8b',weight:1.8},
+    'Private': {color:'#7f8c8d',weight:1.2},
+    'Agriculture': {color:'#a47f3b',weight:1.5},
+    'Other': {color:'#70777f',weight:1.2},
+    'Unknown': {color:'#6c737b',weight:1.2}
+  };
   // Only fetch road segments around the currently visible map, not the whole
   // municipal network. No extra mapping libraries, API keys or server needed.
   let roadRequest = null;
@@ -280,7 +288,7 @@
       </button>
       <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
       <div class="legend-static-row"><i class="cone-key"></i><span>Cone Zones</span></div>
-      ${els.layerStreetClasses.checked ? `<div class="legend-static-row"><i class="road-class-key"></i><span>Street classifications · City colors</span></div>` : ''}
+      ${els.layerStreetClasses.checked ? `<div class="legend-static-row"><i class="road-class-key"></i><span>Street classifications · color-coded</span></div>` : ''}
       <div class="legend-note">Click roads for City designations; click marker categories to customize.</div>`;
   }
 
@@ -1118,7 +1126,7 @@
   }
 
   function roadClassStyle(feature) {
-    const designation=String(feature?.properties?.ROADCLASS || '');
+    const designation=String(feature?.properties?.STREETCLASS || '');
     return {
       ...(ROAD_CLASS_STYLES[designation] || {color:'#ab0067',weight:1}),
       opacity:1, lineCap:'round', lineJoin:'round'
@@ -1126,14 +1134,16 @@
   }
 
   function roadClassPopup(feature) {
-    const street=feature?.properties?.STREET || 'Street segment';
-    const designation=feature?.properties?.ROADCLASS || 'Not listed';
+    const p=feature?.properties || {};
+    const street=[p.PREDIR,p.STREETNAME,p.STREETTYPE,p.SUFFIX].filter(Boolean).join(' ') || 'Street segment';
+    const designation=p.STREETCLASS || 'Not listed';
     return `<div class="popup-title">${escapeHtml(street)}</div>`+
       `<div class="popup-row"><span class="popup-label">Classification</span>${escapeHtml(designation)}</div>`+
-      `<div class="road-reference-source">City of Boulder · published road characteristics</div>`;
+      `<div class="road-reference-source">City of Boulder · Street Centerline GIS</div>`;
   }
 
   function roadStatus(message,error=false) {
+    if (!els.layerStreetClasses.checked) return;
     els.roadStatus.hidden=false;
     els.roadClassStatus.hidden=false;
     els.roadClassStatus.textContent=message;
@@ -1144,7 +1154,7 @@
     const container=els.streetClassLegend;
     container.hidden=!els.layerStreetClasses.checked;
     if (els.layerStreetClasses.checked) {
-      container.innerHTML='<summary>Street classification colors <span aria-hidden="true">⌄</span></summary>'+
+      container.innerHTML='<summary>City street classifications <span aria-hidden="true">⌄</span></summary>'+
         `<div class="road-legend-items">${Object.entries(ROAD_CLASS_STYLES).map(([value,style])=>
           `<div class="road-legend-item"><i style="--road-color:${style.color};--road-weight:${Math.max(2,style.weight)}px"></i><span>${escapeHtml(value)}</span></div>`
         ).join('')}</div>`;
@@ -1191,11 +1201,14 @@
     const west=bounds.getWest(),south=bounds.getSouth();
     const east=bounds.getEast(),north=bounds.getNorth();
     const envelope=JSON.stringify({xmin:west,ymin:south,xmax:east,ymax:north,spatialReference:{wkid:4326}});
-    // Get important corridors first; the residential/local segments follow.
-    // This gets useful map data on screen without waiting for every street.
+    // Main roads arrive first; residential and minor segments follow.
+    // Query the actual City of Boulder street centerline GIS, not an unrelated
+    // ArcGIS road service. Do not block the first batch on the entire download.
+    const priority=['Principal Arterial','Minor Arterial','Collector','Expressway','Freeway','Ramp'];
+    const priorityIn=priority.map(v=>`'${v}'`).join(',');
     const categories=[
-      "ROADCLASS <> 'Local'",
-      "ROADCLASS = 'Local'"
+      `STREETCLASS IN (${priorityIn})`,
+      `STREETCLASS NOT IN (${priorityIn}) OR STREETCLASS IS NULL`
     ];
     let count=0;
     let began=false;
@@ -1203,14 +1216,14 @@
     try {
       for (const where of categories) {
         let offset=0;
-        const size=400;
+        const size=500;
         while (offset<12000) {
           if (controller.signal.aborted || serial!==roadRequestSerial) return;
           const params=new URLSearchParams({
-            f:'geojson',where,outFields:'STREET,ROADCLASS',
+            f:'geojson',where,outFields:'OBJECTID,PREDIR,STREETNAME,STREETTYPE,SUFFIX,STREETCLASS',
             geometry:envelope,geometryType:'esriGeometryEnvelope',inSR:'4326',
             spatialRel:'esriSpatialRelIntersects',returnGeometry:'true',outSR:'4326',
-            orderByFields:'OBJECTID_1 ASC',resultOffset:String(offset),resultRecordCount:String(size)
+            orderByFields:'OBJECTID ASC',resultOffset:String(offset),resultRecordCount:String(size)
           });
           const timeout=AbortSignal.timeout ? AbortSignal.timeout(15000) : null;
           // One fetch per page; errors are displayed rather than silent spinning.
@@ -1234,7 +1247,7 @@
       }
       if (!count) {
         roadClassesLayer.clearLayers();
-        throw new Error('No classified streets returned for this map area');
+        throw new Error('Boulder returned no street segments for this map area');
       }
       roadViewportLoaded=bounds;
       roadStatus(`${count.toLocaleString()} City street segments displayed.`);

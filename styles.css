@@ -280,7 +280,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .buffer-editor-note{font-size:10px;line-height:1.45;color:var(--muted);margin:10px 0 2px}
 
 /* City street classification map reference */
-.road-class-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:3px solid #ff00c5}
+.road-class-key{display:inline-block;flex:0 0 16px;width:16px;height:0;border-top:3px solid #d000a1}
 .road-reference-source{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);font-size:10px;color:#64748b}
 
 /* Preserve City's individual road-class styles; show full key */
@@ -291,4 +291,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .road-legend-items{display:grid;grid-template-columns:1fr 1fr;column-gap:8px;row-gap:7px;padding:2px 0 11px}
 .road-legend-item{display:flex;align-items:center;gap:7px;font-size:10px;line-height:1.25;color:var(--muted)}
 .road-legend-item i{width:16px;height:0;flex:0 0 16px;border-top:var(--road-weight) solid var(--road-color);filter:drop-shadow(0 0 1px rgba(0,0,0,.12))}
-.road-class-key{border-top:3px solid #ff00c5}
+.road-class-key{border-top:3px solid #d000a1}
