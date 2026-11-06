@@ -303,3 +303,41 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .road-legend-group + .road-legend-group{border-top:1px solid var(--line);padding-top:9px}
 .road-legend-heading{font-size:10px;font-weight:750;color:var(--ink);padding:3px 0 8px}
 .road-status-group .layer-status + .layer-status{margin-top:5px}
+
+/* === Pas de Deux 3.3 — map workspace controls === */
+.inventory-tools{flex-wrap:wrap}
+.inventory-tools>span{flex:1 1 125px}
+.inventory-tools #addPermitBtn{white-space:nowrap}
+.inventory-tools #clearAllBtn{flex:1 1 100%;text-align:center}
+.manual-address-actions{display:flex;align-items:center;gap:12px;margin:-2px 0 14px;flex-wrap:wrap}
+.manual-address-actions #manualAddressStatus{color:var(--muted);font-size:11px;line-height:1.45;flex:1;min-width:160px}
+.manual-address-match{padding:10px 12px;background:var(--soft-blue);color:var(--ink);border:1px solid var(--line-strong);border-radius:9px;margin:-5px 0 13px}
+.manual-address-match strong,.manual-address-match small{display:block}
+.manual-address-match small{color:var(--muted);font-size:11px;margin-top:4px}
+.manual-record-note{color:var(--muted);font-size:11px;font-weight:650}
+.dialog .dialog-actions.split{flex-wrap:wrap;gap:10px}
+.dialog .dialog-actions.split>div{display:flex;gap:8px;flex-wrap:wrap}
+#manualPermitDialog{width:min(640px,calc(100vw - 28px))}
+#manualPermitDialog .dialog-actions .button{min-height:32px}
+.mode-bar.focus-mode-bar{top:16px}
+.pd-marker{opacity:1}
+.permit-div-icon .pd-marker{opacity:var(--permits-opacity,1)}
+.venue-div-icon .pd-marker{opacity:var(--venues-opacity,1)}
+#map .marker-cluster{opacity:var(--permits-opacity,1)}
+.map-key{width:265px;min-width:265px;max-height:calc(100% - 70px);overflow-y:auto;overflow-x:hidden}
+.map-key #mapKeyBody .legend-layer-block{display:block!important;padding:1px 1px 5px;border-bottom:1px solid var(--line)}
+.map-key #mapKeyBody .legend-layer-block:last-of-type{border-bottom:0}
+.map-key #mapKeyBody .legend-edit-row{padding:7px 5px}
+.map-key #mapKeyBody .legend-static-row{padding:7px 4px;border-top:0}
+.map-key #mapKeyBody .legend-opacity-row{display:block!important;margin:0 5px 4px;padding:0 0 0 20px}
+.map-key #mapKeyBody .legend-opacity-row summary{display:list-item!important;list-style:disclosure-closed;cursor:pointer;font-size:9.5px;color:var(--muted);padding:1px 0;user-select:none}
+.map-key #mapKeyBody .legend-opacity-row[open] summary{list-style:disclosure-open}
+.map-key #mapKeyBody .legend-opacity-row summary strong{font-variant-numeric:tabular-nums;float:right;font-weight:750}
+.map-key #mapKeyBody .legend-opacity-row label{display:block!important;margin:7px 0 2px}
+.map-key #mapKeyBody input[type="range"]{display:block;width:100%;accent-color:var(--blue);cursor:pointer}
+.map-key #mapKeyBody .cone-key{width:16px;flex:0 0 16px;border:1px solid var(--cone-accent);background:color-mix(in srgb,var(--cone-accent) 50%,transparent);border-radius:3px}
+.map-key #mapKeyBody .legend-note{padding-top:9px}
+.marker-editor{bottom:auto;top:70px;max-height:calc(100% - 95px)}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+@media(max-width:760px){.map-key{width:230px;min-width:230px;max-height:calc(100% - 80px)}.marker-editor{top:16px;right:250px;bottom:auto;max-height:calc(100% - 30px)}}
+@media(max-width:520px){.marker-editor{right:12px;top:12px;max-height:calc(100% - 24px)}}

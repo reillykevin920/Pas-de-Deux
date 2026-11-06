@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-app-version="3.2.0">
+<html lang="en" data-theme="light" data-app-version="3.3.0">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="./styles.css?v=3.2.0" />
+  <link rel="stylesheet" href="./styles.css?v=3.3.0" />
 </head>
 <body>
   <header class="appbar">
@@ -49,6 +49,7 @@
       </div>
       <div class="inventory-tools">
         <span><strong>Permit inventory</strong><small>Local records on this device</small></span>
+        <button id="addPermitBtn" type="button" class="button small primary">+ Add permit</button>
         <button id="clearAllBtn" class="clear-permits-btn" type="button" aria-label="Clear all imported permits permanently">Clear all permits <span aria-hidden="true">↗</span></button>
       </div>
 
@@ -63,6 +64,7 @@
           <label class="toggle-row"><input id="layerBuildings" type="checkbox" checked /><span>Venue buildings</span></label>
           <label class="toggle-row"><input id="layerVenueContext" type="checkbox" /><span>500-ft venue context</span></label>
           <label class="toggle-row"><input id="layerCorridors" type="checkbox" checked /><span>Corridors</span></label>
+          <label class="toggle-row"><input id="layerFocusAreas" type="checkbox" checked /><span>Focus areas</span></label>
           <label class="toggle-row"><input id="layerConeZones" type="checkbox" /><span>Cone Zones</span></label>
           <label class="toggle-row"><input id="layerMajorStreets" type="checkbox" /><span>Major streets</span></label>
           <label class="toggle-row"><input id="layerLocalStreets" type="checkbox" /><span>Local / other streets</span></label>
@@ -91,6 +93,15 @@
           <button id="drawCorridorBtn" class="choice-button"><strong>Draw custom route</strong><span>Fallback for routes that do not follow one street.</span></button>
         </div>
         <div id="corridorList" class="record-list"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head corridor-head"><div><h2>Focus areas</h2><p>Mark an area needing attention, then give it a title.</p></div><button id="addFocusBtn" class="button small primary" type="button">Add</button></div>
+        <div id="focusActions" class="corridor-actions" hidden>
+          <button id="drawFocusCircleBtn" class="choice-button" type="button"><strong>Draw circle</strong><span>Click and drag to establish a radius.</span></button>
+          <button id="drawFocusPolygonBtn" class="choice-button" type="button"><strong>Draw perimeter</strong><span>Click points around the boundary; double-click to finish.</span></button>
+        </div>
+        <div id="focusList" class="record-list"></div>
       </section>
 
       <section class="section filters">
@@ -140,13 +151,15 @@
         <button id="cancelManualPinBtn" class="button inverse">Cancel</button>
       </div>
 
+      <div id="focusModeBar" class="mode-bar focus-mode-bar" hidden><div><strong>Draw focus area</strong><span id="focusModeText">Draw on the map, or Cancel / Esc.</span></div><button id="cancelFocusModeBtn" class="button inverse" type="button">Cancel</button></div>
+
       <div id="markerEditor" class="marker-editor" hidden aria-label="Marker appearance">
         <div class="marker-editor-head"><div><span class="eyebrow">MAP APPEARANCE</span><h3 id="markerEditorTitle">Permit pins</h3></div><button type="button" id="closeMarkerEditor" class="marker-editor-close" aria-label="Close marker settings">×</button></div>
         <p class="marker-editor-help">These are default map styles. Existing permit records stay unchanged.</p>
         <label class="field" id="pinColorModeWrap"><span>Permit colors</span><select id="pinColorMode"><option value="single">One color</option><option value="status">By status</option></select></label>
         <div id="bufferPaletteControls" hidden>
           <label class="field buffer-color-field"><span>Buffer fill &amp; outline color</span><input id="bufferColor" type="color" value="#8b5cf6" aria-label="500-foot buffer color" /></label>
-          <label class="field buffer-opacity-field"><span>Fill strength <output id="bufferOpacityLabel" for="bufferOpacity">25%</output></span><input id="bufferOpacity" type="range" min="10" max="50" step="5" value="25" aria-label="Buffer fill strength" /></label>
+          <label class="field buffer-opacity-field"><span>Fill strength <output id="bufferOpacityLabel" for="bufferOpacity">25%</output></span><input id="bufferOpacity" type="range" min="0" max="100" step="5" value="25" aria-label="Buffer fill strength" /></label>
           <p class="buffer-editor-note">Shows the same 500-ft radius around each venue. Only the appearance changes.</p>
         </div>
         <div id="pinPaletteControls">
@@ -181,6 +194,7 @@
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
       <div id="sourceBlock" class="source-block"></div>
+      <label class="field" id="editManualAddressWrap" hidden><span>Street address</span><input name="manualAddress" placeholder="2032 14th St" /></label>
       <div class="form-grid">
         <label class="field"><span>Permit #</span><input name="permitNumber" autocomplete="off" /></label>
         <label class="field"><span>Status</span><select name="status"><option>In Review</option><option>Upcoming</option><option>Active</option><option>Closed</option></select></label>
@@ -195,6 +209,24 @@
       <div class="dialog-actions split"><div><button id="archivePermitBtn" type="button" class="button">Archive</button><button id="deletePermitBtn" type="button" class="button danger-outline">Delete permanently</button></div><div><button class="button" value="cancel">Cancel</button><button id="savePermitBtn" type="submit" class="button primary" value="default">Save</button></div></div>
     </form>
   </dialog>
+
+  <dialog id="manualPermitDialog" class="dialog">
+    <form method="dialog" id="manualPermitForm">
+      <div class="dialog-head"><div><span class="dialog-kicker">New local record</span><h2>Add permit / proposed work</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <p class="dialog-intro">Create a record before a permit PDF exists. Search the City address data or place the pin yourself.</p>
+      <label class="field"><span>Street address</span><input name="address" id="manualAddress" placeholder="e.g. 2032 14th St" required autocomplete="street-address" /></label>
+      <div class="manual-address-actions"><button id="findManualAddressBtn" type="button" class="button">Find on City map</button><span id="manualAddressStatus" aria-live="polite"></span></div>
+      <div id="manualAddressMatch" class="manual-address-match" hidden><strong id="manualMatchedLabel"></strong><small>Location suggested by Boulder GIS. Confirm to use this point.</small></div>
+      <div class="two-col"><label class="field"><span>Work type</span><input name="workType" placeholder="Proposed work" /></label><label class="field"><span>Contractor</span><input name="contractor" placeholder="If known" /></label></div>
+      <div class="two-col"><label class="field"><span>Permit # (optional)</span><input name="permitNumber" /></label><label class="field"><span>Status</span><select name="status"><option>In Review</option><option>Upcoming</option><option>Active</option><option>Closed</option></select></label></div>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="3" placeholder="Upcoming work, coordination concerns, etc."></textarea></label>
+      <div class="dialog-actions split"><div><button id="placeManualPermitBtn" type="button" class="button">Place pin myself</button></div><div><button class="button" value="cancel">Cancel</button><button id="saveManualNoPinBtn" type="button" class="button">Save without pin</button><button id="saveManualMatchedBtn" type="button" class="button primary" disabled>Use match & save</button></div></div>
+    </form>
+  </dialog>
+
+  <dialog id="streetNotesDialog" class="dialog small-dialog"><form method="dialog" id="streetNotesForm"><div class="dialog-head"><div><span class="dialog-kicker">Street segment</span><h2 id="streetNotesTitle">Street</h2></div><button class="icon-button" value="cancel">×</button></div><p class="dialog-intro" id="streetNotesClass"></p><label class="field"><span>Local notes</span><textarea name="notes" rows="5" placeholder="Coordination or engineering observations"></textarea></label><div class="dialog-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Save notes</button></div></form></dialog>
+
+  <dialog id="focusDialog" class="dialog small-dialog"><form method="dialog" id="focusForm"><div class="dialog-head"><div><span class="dialog-kicker">Focus area</span><h2>Area details</h2></div><button class="icon-button" value="cancel">×</button></div><label class="field"><span>Title</span><input name="title" required placeholder="Downtown event coordination" /></label><label class="field"><span>Notes</span><textarea name="notes" rows="4"></textarea></label><div class="dialog-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Save area</button></div></form></dialog>
 
   <dialog id="streetScopeDialog" class="dialog scope-dialog">
     <form method="dialog" id="streetScopeForm">
@@ -249,6 +281,6 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
-  <script src="./app.js?v=3.2.0"></script>
+  <script src="./app.js?v=3.3.0"></script>
 </body>
 </html>

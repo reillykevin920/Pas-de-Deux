@@ -1,17 +1,20 @@
-# Pas de Deux v3.2 — street group toggles and Cone Zones color control
+# Pas de Deux v3.3 — manual permits, focus areas, and map appearance
 
-## What changed
+## What's new
 
-- **Major streets** and **Local / other streets** are now separate optional map toggles. Major streets include Principal Arterial, Minor Arterial, Collector, Expressway, Freeway and Ramp. Local / other covers Residential, Alley, Pedestrian Mall, Recreational Trail, Private, Agriculture, Unknown, Other and any newly introduced/unclassified street values.
-- Each toggle requests **only its corresponding street segments from the City of Boulder Street Centerline GIS**, for the current view. Turning on Major streets does **not** download residential/local streets. Each toggled layer caches its current geographic view until the map moves outside it, and streams results in pages.
-- Both toggles can be on at once; the legend displays only enabled groups with each designation's distinct color.
-- **Cone Zones overlay color** is editable from the bottom-right **Map key → Cone Zones → Edit**. Choose a swatch or custom color; rendered Cone Zones points, lines and polygons change immediately. The selection persists in existing browser settings / JSON backups.
-- The existing City data source, permit workflow, corridors, venue overlays, and Cone Zones feed are unchanged. The removed speed-limit layer has not been reinstated.
+- **Add permit / proposed work** creates a permit record before a PDF is issued. Enter a street address, search Boulder's public address points and confirm the match, or place a pin yourself. You can also save the record without a location and place it later. Existing filename-only permit import is preserved. When a filename matches a single manual record, the app asks before linking it, retaining existing notes and location.
+- **Map key opacity controls** are available for permits, Sundance venues, venue buildings, the 500-foot venue context, corridors, Cone Zones, focus areas, major streets, and local/other streets. Adjustments save in the same browser and in JSON backups.
+- **Cone Zones and designated corridors** now use wider translucent highlights rather than opaque hairline strokes. Colors and opacity are adjustable independently; default opacity is 50%. Highlights show published lines and geometries, not authoritative impact widths.
+- **Street-classification popups** display the City street name and classification. Individual street segments can be assigned editable local notes, saved in browser storage.
+- **Focus areas** can be drawn as circles or polygons, named, annotated, edited, deleted, and shown/hidden as their own map layer. Color and opacity are customizable.
+- **JSON backups** now include focus areas, street notes, and appearance settings. Existing local permit and corridor records remain compatible.
 
-## Compatibility
+## Deployment
 
-Replace `index.html`, `app.js`, `styles.css`, and `README.md` in the existing GitHub Pages site. Versioned JavaScript/CSS links prevent mixed-browser cache versions. Existing browser-local permit and corridor records are **not overwritten**. No new services or login requirements.
+Replace only the four files `index.html`, `app.js`, `styles.css`, and `README.md` in the existing GitHub Pages repository. Keep the **same origin** (domain/subdomain and scheme) and browser profile if you want the existing local records to remain visible. Moving to a different URL or subdomain changes the browser's local-storage origin; export a backup from the old site and import it on the new one.
 
-## Notes
+The app does not read or upload imported PDFs; filename-based import remains intact. Public map tiles and Boulder GIS services require an internet connection. No dedicated backend or City-network access is required for the current configuration.
 
-Browser tests verify group-specific requests, toggle isolation, viewport updates, map key/legend behavior, and Cone Zones color persistence with simulated ArcGIS responses. Real-time response speed depends on the City's published GIS endpoint; deployed-browser confirmation is still needed.
+## Verification
+
+Automated browser tests using simulated City GIS responses exercised manual records (including address confirmation and manual placement), focus circle creation and persistence, street segment notes, color selection and opacity, and the major-street layer. JavaScript syntax checks passed. The production City GIS services and real map drawing interactions must still be checked in a deployed browser.

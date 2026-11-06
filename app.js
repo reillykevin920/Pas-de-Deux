@@ -73,7 +73,9 @@
   ];
   const STATUS_VALUES = ['In Review','Upcoming','Active','Closed'];
   const PIN_COLORS = ['#2563eb','#ea580c','#be123c','#0f766e','#7c3aed','#111827','#eab308','#e11d48'];
-  const DEFAULT_APPEARANCE = { coneZonesColor:'#c5283d', theme:'light', pinColorMode:'single', pinColor:'#1e779e', pinShape:'pin', pinSize:'medium', venueColor:'#ce913b', venueShape:'circle', venueSize:'medium', bufferColor:'#8b5cf6', bufferOpacity:.25 };
+  const DEFAULT_APPEARANCE = {coneZonesColor:'#c5283d',corridorColor:'#2e6f9e',focusColor:'#8866bb',theme:'light',pinColorMode:'single',pinColor:'#1e779e',pinShape:'pin',pinSize:'medium',venueColor:'#ce913b',venueShape:'circle',venueSize:'medium',bufferColor:'#8b5cf6',bufferOpacity:.25,permitsOpacity:1,venuesOpacity:1,buildingsOpacity:.85,corridorsOpacity:.50,coneZonesOpacity:.50,majorOpacity:1,localOpacity:.80,focusOpacity:.40};
+  const LAYER_OPACITY = {permits:'permitsOpacity',venues:'venuesOpacity',buildings:'buildingsOpacity',buffers:'bufferOpacity',corridors:'corridorsOpacity',coneZones:'coneZonesOpacity',major:'majorOpacity',local:'localOpacity',focus:'focusOpacity'};
+  const LAYER_OPACITY_LABEL = {permits:'Permits',venues:'Sundance sites',buildings:'Venue buildings',buffers:'500-ft context',corridors:'Corridors',coneZones:'Cone Zones',major:'Major streets',local:'Local streets',focus:'Focus areas'};
 
   let state = migrateState(loadState());
   let map;
@@ -84,6 +86,14 @@
   let venueMarkersReady = false;
   let activeMarkerEditor = 'permits'; // permits | venues | buffers | coneZones
   let corridorLayer;
+  let focusLayer;
+  let currentFocusId=null;
+  let pendingFocus=null;
+  let focusMode=null;
+  let pendingManualNew=null;
+  let matchedManualAddress=null;
+  let pendingManualPlacement=null;
+  let activeStreetNoteKey=null;
   let corridorPreviewLayer;
   let corridorEndpointLayer;
   let coneZonesLayer;
@@ -132,6 +142,8 @@
     folderHandle = await idbGet('permitFolder');
     updateFolderButton();
     rebuildCorridors();
+    rebuildFocusAreas();
+    applyAllLayerOpacity();
     // Background geographic enrichment must never delay the map becoming usable.
     renderAll();
     void resolveVenueBuildings();
@@ -140,7 +152,7 @@
 
   function cacheElements() {
     [
-      'visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
+      'editManualAddressWrap','addPermitBtn','manualPermitDialog','manualPermitForm','manualAddress','findManualAddressBtn','manualAddressStatus','manualAddressMatch','manualMatchedLabel','placeManualPermitBtn','saveManualNoPinBtn','saveManualMatchedBtn','streetNotesDialog','streetNotesForm','streetNotesTitle','streetNotesClass','focusDialog','focusForm','focusModeBar','focusModeText','cancelFocusModeBtn','addFocusBtn','focusActions','drawFocusCircleBtn','drawFocusPolygonBtn','focusList','layerFocusAreas','visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
       'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerMajorStreets','layerLocalStreets','roadStatus','roadMajorStatus','roadLocalStatus','streetClassLegend','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
@@ -178,6 +190,13 @@
       updateAppearance({color:b.dataset.color});
     });
     els.pinPalette.dataset.bound='1';
+    if (!els.mapKeyBody.dataset.opacityBound) els.mapKeyBody.addEventListener('input',e=>{
+      const range=e.target.closest('input[data-opacity-category]'); if (!range) return;
+      const category=range.dataset.opacityCategory;
+      els.mapKeyBody.querySelector(`[data-opacity-label="${category}"]`).textContent=`${range.value}%`;
+      setLayerOpacity(category,Number(range.value)/100);
+    });
+    els.mapKeyBody.dataset.opacityBound='1';
     if (!els.mapKeyBody.dataset.bound) els.mapKeyBody.addEventListener('click',e=>{
       const button=e.target.closest('[data-style-category]');
       if (!button) return;
@@ -199,18 +218,21 @@
     activeMarkerEditor=category;
     const isBuffer=category==='buffers';
     const isConeZones=category==='coneZones';
-    const data=isBuffer?null:(isConeZones?{color:state.appearance.coneZonesColor}:appearanceFor(category));
-    els.markerEditorTitle.textContent=isBuffer?'500-ft venue context':isConeZones?'Cone Zones':category==='venues'?'Sundance site markers':'Permit markers';
+    const isCorridor=category==='corridors';
+    const isFocus=category==='focus';
+    const isSolid=isConeZones||isCorridor||isFocus;
+    const data=isBuffer?null:(isSolid?{color:isConeZones?state.appearance.coneZonesColor:isCorridor?state.appearance.corridorColor:state.appearance.focusColor,shape:'circle',size:'medium',mode:'single'}:appearanceFor(category));
+    els.markerEditorTitle.textContent=isBuffer?'500-ft venue context':isConeZones?'Cone Zones':isCorridor?'Corridor highlights':isFocus?'Focus area highlights':category==='venues'?'Sundance site markers':'Permit markers';
     els.markerEditor.querySelector('.marker-editor-help').textContent=isBuffer
       ? 'A visible 500-ft radius around each Sundance venue. This layer does not change permit impact assessments.'
-      : isConeZones ? 'Change the Cone Zones overlay color. City project data and locations stay unchanged.'
+      : isSolid ? 'Change the translucent highlight color. Location and source data are unchanged.'
       : 'These are default map styles. Existing permit records stay unchanged.';
     els.bufferPaletteControls.hidden=!isBuffer;
     els.pinColorModeWrap.hidden=category!=='permits';
     els.pinPaletteControls.hidden=isBuffer || (category==='permits' && state.appearance.pinColorMode==='status');
-    els.pinPaletteLabel.textContent=isConeZones?'Cone Zones color':'Marker color';
+    els.pinPaletteLabel.textContent=isConeZones?'Cone Zones color':isCorridor?'Corridor color':isFocus?'Focus area color':'Marker color';
     els.pinColorCustom.setAttribute('aria-label',isConeZones?'Custom Cone Zones color':'Custom marker color');
-    els.pinGeometryControls.hidden=isBuffer || isConeZones;
+    els.pinGeometryControls.hidden=isBuffer || isSolid;
     if (isBuffer) {
       els.bufferColor.value=state.appearance.bufferColor;
       els.bufferOpacity.value=Math.round(state.appearance.bufferOpacity*100);
@@ -230,7 +252,13 @@
 
   function updateAppearance({color}={}) {
     const a=state.appearance;
-    if (activeMarkerEditor==='coneZones') {
+    if (activeMarkerEditor==='corridors') {
+      a.corridorColor=color||els.pinColorCustom.value;
+      rebuildCorridors();
+    } else if (activeMarkerEditor==='focus') {
+      a.focusColor=color||els.pinColorCustom.value;
+      rebuildFocusAreas();
+    } else if (activeMarkerEditor==='coneZones') {
       a.coneZonesColor=color||els.pinColorCustom.value;
       repaintConeZones();
     } else if (activeMarkerEditor==='venues') {
@@ -246,7 +274,7 @@
       els.pinPaletteControls.hidden=a.pinColorMode==='status';
       renderPermits();
     }
-    const selectedColor=activeMarkerEditor==='coneZones'?a.coneZonesColor:activeMarkerEditor==='venues'?a.venueColor:a.pinColor;
+    const selectedColor=activeMarkerEditor==='coneZones'?a.coneZonesColor:activeMarkerEditor==='corridors'?a.corridorColor:activeMarkerEditor==='focus'?a.focusColor:activeMarkerEditor==='venues'?a.venueColor:a.pinColor;
     els.pinPalette.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.color===selectedColor)));
     saveState();updateLegend();
   }
@@ -266,7 +294,7 @@
       L.circle([venue.lat,venue.lng],{
         radius:VENUE_NEAR_FEET*.3048,
         color:state.appearance.bufferColor,
-        weight:3, opacity:.98,
+        weight:3, opacity:state.appearance.bufferOpacity,
         fillColor:state.appearance.bufferColor,
         fillOpacity:state.appearance.bufferOpacity,
         interactive:false
@@ -292,25 +320,52 @@
     const a=state.appearance;
     const swatch=(color,shape)=>`<i class="legend-marker pd-${shape}" style="--pin-color:${color}"></i>`;
     const permitColors=a.pinColorMode==='status'
-       ? `<div class="legend-status-swatches">${STATUS_VALUES.map(s=>`<span title="${escapeHtml(s)}" style="--swatch:${pinColor({status:s})}"></span>`).join('')}</div>`
-       : swatch(a.pinColor,a.pinShape);
-    els.mapKeyBody.innerHTML=`
-      <button type="button" class="legend-edit-row" data-style-category="permits" aria-label="Edit default permit marker appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='permits'}">
-        <span class="legend-edit-left">${permitColors}<span>Permits</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
-      </button>
-      <button type="button" class="legend-edit-row" data-style-category="venues" aria-label="Edit default Sundance site marker appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='venues'}">
-        <span class="legend-edit-left">${swatch(a.venueColor,a.venueShape)}<span>Sundance sites</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
-      </button>
-      <button type="button" class="legend-edit-row" data-style-category="buffers" aria-label="Edit 500-foot venue context appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='buffers'}">
-        <span class="legend-edit-left"><i class="legend-buffer-swatch" style="--buffer-swatch:${a.bufferColor};--buffer-opacity:${a.bufferOpacity}"></i><span>500-ft venue context</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
-      </button>
-      <div class="legend-static-row"><i class="corridor-key"></i><span>Designated corridors</span></div>
-      <button type="button" class="legend-edit-row" data-style-category="coneZones" aria-label="Edit Cone Zones overlay color" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor==='coneZones'}">
-        <span class="legend-edit-left"><i class="cone-key" style="--cone-accent:${a.coneZonesColor}"></i><span>Cone Zones</span></span><span class="legend-edit-hint">Edit <span aria-hidden="true">↗</span></span>
-      </button>
-      ${els.layerMajorStreets.checked ? `<div class="legend-static-row"><i class="road-class-key"></i><span>Major streets · color-coded</span></div>` : ''}
-      ${els.layerLocalStreets.checked ? `<div class="legend-static-row"><i class="road-local-key"></i><span>Local / other streets · color-coded</span></div>` : ''}
-      <div class="legend-note">Click roads for City designations; click marker categories to customize.</div>`;
+      ? `<div class="legend-status-swatches">${STATUS_VALUES.map(st=>`<span title="${escapeHtml(st)}" style="--swatch:${pinColor({status:st})}"></span>`).join('')}</div>`
+      : swatch(a.pinColor,a.pinShape);
+    const editable=(category,icon,label)=>`<button type="button" class="legend-edit-row" data-style-category="${category}" aria-label="Edit ${escapeAttr(label)} color or appearance" aria-pressed="${!els.markerEditor.hidden&&activeMarkerEditor===category}"><span class="legend-edit-left">${icon}<span>${label}</span></span><span class="legend-edit-hint">Edit ↗</span></button>`;
+    const staticRow=(icon,label)=>`<div class="legend-static-row">${icon}<span>${label}</span></div>`;
+    const opacity=(category)=>{
+      const val=Math.round((Number(a[LAYER_OPACITY[category]])||0)*100);
+      return `<details class="legend-opacity-row"><summary>Opacity <strong data-opacity-label="${category}">${val}%</strong></summary><label><span class="sr-only">${escapeHtml(LAYER_OPACITY_LABEL[category])} opacity</span><input type="range" data-opacity-category="${category}" min="0" max="100" step="5" value="${val}" aria-label="${escapeAttr(LAYER_OPACITY_LABEL[category])} opacity"></label></details>`;
+    };
+    const block=(category,html)=>`<div class="legend-layer-block">${html}${opacity(category)}</div>`;
+    els.mapKeyBody.innerHTML=[
+      block('permits',editable('permits',permitColors,'Permits')),
+      block('venues',editable('venues',swatch(a.venueColor,a.venueShape),'Sundance sites')),
+      block('buildings',staticRow('<i class="legend-buffer-swatch" style="--buffer-swatch:#d7c66d;--buffer-opacity:.35"></i>','Venue buildings')),
+      block('buffers',editable('buffers',`<i class="legend-buffer-swatch" style="--buffer-swatch:${a.bufferColor};--buffer-opacity:${a.bufferOpacity}"></i>`,'500-ft venue context')),
+      block('corridors',editable('corridors',`<i class="cone-key" style="--cone-accent:${a.corridorColor}"></i>`,'Corridors')),
+      block('coneZones',editable('coneZones',`<i class="cone-key" style="--cone-accent:${a.coneZonesColor}"></i>`,'Cone Zones')),
+      block('focus',editable('focus',`<i class="cone-key" style="--cone-accent:${a.focusColor}"></i>`,'Focus areas')),
+      ...(els.layerMajorStreets.checked?[block('major',staticRow('<i class="road-class-key"></i>','Major streets · color-coded'))]:[]),
+      ...(els.layerLocalStreets.checked?[block('local',staticRow('<i class="road-local-key"></i>','Local streets · color-coded'))]:[]),
+      '<div class="legend-note">Select Edit to adjust colors, or open Opacity to fade a layer.</div>'
+    ].join('');
+  }
+
+  function setLayerOpacity(category,value) {
+    const key=LAYER_OPACITY[category];
+    if (!key) return;
+    state.appearance[key]=Math.max(0,Math.min(1,Number(value)));
+    saveState();
+    applyLayerOpacity(category);
+  }
+
+  function applyAllLayerOpacity() { for (const category of Object.keys(LAYER_OPACITY)) applyLayerOpacity(category); }
+  function applyLayerOpacity(category) {
+    const a=state.appearance;
+    if (category==='permits') document.documentElement.style.setProperty('--permits-opacity',a.permitsOpacity);
+    if (category==='venues') document.documentElement.style.setProperty('--venues-opacity',a.venuesOpacity);
+    if (category==='buildings' && venueBuildingLayer) venueBuildingLayer.eachLayer(group=>group.eachLayer?.(l=>l.setStyle?.({opacity:.9*a.buildingsOpacity,fillOpacity:.32*a.buildingsOpacity})));
+    if (category==='buffers') {
+      if (venueContextLayer) renderVenueContext();
+      if (els.bufferOpacity) {els.bufferOpacity.value=Math.round(a.bufferOpacity*100);els.bufferOpacityLabel.textContent=`${Math.round(a.bufferOpacity*100)}%`;}
+    }
+    if (category==='corridors' && corridorLayer) rebuildCorridors();
+    if (category==='coneZones') repaintConeZones();
+    if (category==='focus' && focusLayer) rebuildFocusAreas();
+    if (category==='major' && ROAD_GROUPS.major.layer) ROAD_GROUPS.major.layer.setStyle(feature=>roadClassStyle(feature,ROAD_GROUPS.major));
+    if (category==='local' && ROAD_GROUPS.local.layer) ROAD_GROUPS.local.layer.setStyle(feature=>roadClassStyle(feature,ROAD_GROUPS.local));
   }
 
   function initMap() {
@@ -325,6 +380,7 @@
     venueBuildingLayer = L.layerGroup().addTo(map);
     venueContextLayer = L.layerGroup();
     corridorLayer = L.layerGroup().addTo(map);
+    focusLayer = L.layerGroup().addTo(map);
     corridorPreviewLayer = L.layerGroup().addTo(map);
     corridorEndpointLayer = L.layerGroup().addTo(map);
     coneZonesLayer = L.featureGroup();
@@ -334,8 +390,8 @@
     for (const group of Object.values(ROAD_GROUPS)) {
       group.layer=L.geoJSON(null,{
         pane:'pdd-road-classes',
-        style:feature=>roadClassStyle(feature),
-        onEachFeature:(feature,layer)=>layer.bindPopup(roadClassPopup(feature),{maxWidth:320})
+        style:feature=>roadClassStyle(feature,group),
+        onEachFeature:(feature,layer)=>layer.bindPopup(()=>roadClassPopup(feature),{maxWidth:320})
       });
     }
     // The viewport query is deliberately deferred unless the user enables it.
@@ -343,6 +399,17 @@
     permitCluster.addTo(map);
 
     map.on(L.Draw.Event.CREATED, e => {
+      if (focusMode && (e.layerType==='circle'||e.layerType==='polygon')) {
+        pendingFocus=e.layerType==='circle'
+          ? {kind:'circle',center:[e.layer.getLatLng().lat,e.layer.getLatLng().lng],radius:e.layer.getRadius()}
+          : {kind:'polygon',points:e.layer.getLatLngs()[0].map(ll=>[ll.lat,ll.lng])};
+        exitFocusMode();
+        currentFocusId=null;
+        els.focusForm.reset();
+        els.focusDialog.returnValue='';
+        els.focusDialog.showModal();
+        return;
+      }
       if (corridorMode !== 'draw-custom' || e.layerType !== 'polyline') return;
       const path = e.layer.getLatLngs().map(ll => [ll.lat, ll.lng]);
       activeDrawHandler = null;
@@ -353,6 +420,13 @@
     });
 
     map.on('click', async e => {
+      if (pendingManualPlacement) {
+        const data=pendingManualPlacement;
+        pendingManualPlacement=null;
+        els.manualPinModeBar.hidden=true;
+        createManualPermit(data,{lat:e.latlng.lat,lng:e.latlng.lng,matchMethod:'manual',matchedFullAddr:'Manual map placement'});
+        return;
+      }
       if (mapMovePermitId || manualPlacePermitId) {
         const id = mapMovePermitId || manualPlacePermitId;
         const permit = state.permits.find(p => p.id === id);
@@ -389,6 +463,26 @@
 
   function bindUI() {
     els.connectFolderBtn.addEventListener('click', connectOrSyncFolder);
+    els.addPermitBtn.addEventListener('click',openManualPermitDialog);
+    els.findManualAddressBtn.addEventListener('click',findManualAddress);
+    els.manualAddress.addEventListener('input',()=>{ matchedManualAddress=null;els.manualAddressMatch.hidden=true;els.saveManualMatchedBtn.disabled=true;els.manualAddressStatus.textContent=''; });
+    els.saveManualMatchedBtn.addEventListener('click',()=>saveNewManualPermit('matched'));
+    els.saveManualNoPinBtn.addEventListener('click',()=>saveNewManualPermit('unlocated'));
+    els.placeManualPermitBtn.addEventListener('click',()=>saveNewManualPermit('place'));
+    els.manualPermitForm.addEventListener('submit',e=>e.preventDefault());
+    els.streetNotesForm.addEventListener('submit',saveStreetNotes);
+    els.addFocusBtn.addEventListener('click',()=>{els.focusActions.hidden=!els.focusActions.hidden;});
+    els.drawFocusCircleBtn.addEventListener('click',()=>startFocusDrawing('circle'));
+    els.drawFocusPolygonBtn.addEventListener('click',()=>startFocusDrawing('polygon'));
+    els.cancelFocusModeBtn.addEventListener('click',cancelFocusMode);
+    els.focusForm.addEventListener('submit',saveFocusForm);
+    els.focusDialog.addEventListener('close',()=>{if(els.focusDialog.returnValue==='cancel'){pendingFocus=null;currentFocusId=null;}});
+    els.map.addEventListener('click',e=>{
+      const btn=e.target.closest('[data-street-note]');
+      if(btn) {e.stopPropagation();openStreetNotes(btn.dataset.streetNote,btn.dataset.streetName,btn.dataset.streetClass);}
+      const focus=e.target.closest('[data-focus-edit]');
+      if(focus) {e.stopPropagation();editFocus(focus.dataset.focusEdit);}
+    });
     els.filePicker.addEventListener('change', async e => {
       const names = [...e.target.files].filter(f => f.name.toLowerCase().endsWith('.pdf')).map(f => ({ name:f.name, relativePath:f.webkitRelativePath || f.name }));
       await importNames(names);
@@ -434,7 +528,7 @@
     });
     els.corridorForm.addEventListener('submit', saveCorridorForm);
 
-    ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
+    ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerFocusAreas'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
     els.layerConeZones.addEventListener('change', async () => {
       updateLayerVisibility();
       if (els.layerConeZones.checked) await ensureConeZonesLoaded();
@@ -473,7 +567,8 @@
 
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && !els.markerEditor.hidden) { closeMarkerEditor(); }
-      if (e.key === 'Escape' && (mapMovePermitId||manualPlacePermitId)) { e.preventDefault();cancelManualPermitPlacement(); }
+      if (e.key === 'Escape' && focusMode) {e.preventDefault();cancelFocusMode();}
+      if (e.key === 'Escape' && (mapMovePermitId||manualPlacePermitId||pendingManualPlacement)) { e.preventDefault();cancelManualPermitPlacement(); }
       else if (e.key === 'Escape' && corridorMode) { e.preventDefault(); cancelCorridorMode(); }
     }, true);
 
@@ -561,12 +656,89 @@
     els.connectFolderBtn.textContent = folderHandle ? 'Sync permit folder' : 'Connect permit folder';
   }
 
+  function openManualPermitDialog() {
+    els.manualPermitForm.reset();
+    matchedManualAddress=null;
+    els.manualAddressMatch.hidden=true;
+    els.manualAddressStatus.textContent='';
+    els.saveManualMatchedBtn.disabled=true;
+    els.manualPermitDialog.returnValue='';
+    els.manualPermitDialog.showModal();
+    els.manualAddress.focus();
+  }
+
+  function splitAddress(value) {
+    const match=String(value||'').trim().match(/^(\d+[A-Za-z]?)\s+(.+)$/);
+    return match?{addressNumber:match[1],street:match[2].trim()}:null;
+  }
+  function manualPermitData() {
+    if(!els.manualPermitForm.reportValidity()) return null;
+    const form=els.manualPermitForm.elements;
+    const location=splitAddress(form.address.value);
+    if(!location) {els.manualAddressStatus.textContent='Enter a street number and street name.';els.manualAddress.focus();return null;}
+    return {...location,workType:form.workType.value.trim(),contractor:form.contractor.value.trim(),permitNumber:form.permitNumber.value.trim(),status:form.status.value,notes:form.notes.value.trim()};
+  }
+
+  async function findManualAddress() {
+    const info=splitAddress(els.manualAddress.value);
+    if(!info) {els.manualAddressStatus.textContent='Enter a number and street, such as 2032 14th St.';return;}
+    matchedManualAddress=null;
+    els.manualAddressMatch.hidden=true;
+    els.saveManualMatchedBtn.disabled=true;
+    els.findManualAddressBtn.disabled=true;
+    els.manualAddressStatus.textContent='Checking Boulder addresses…';
+    try {
+      const found=await queryAddressPoint(info.addressNumber,info.street);
+      if(!found || found.ambiguous) {
+        els.manualAddressStatus.textContent=found?.reason || 'No confident match. You can place the pin manually.';
+        return;
+      }
+      matchedManualAddress={...found,input:els.manualAddress.value.trim()};
+      els.manualMatchedLabel.textContent=found.fullAddr || els.manualAddress.value.trim();
+      els.manualAddressMatch.hidden=false;
+      els.saveManualMatchedBtn.disabled=false;
+      els.manualAddressStatus.textContent='Address found. Confirm it or place a pin yourself.';
+    } catch(err) {els.manualAddressStatus.textContent='City lookup unavailable. Manual pin placement still works.';}
+    finally {els.findManualAddressBtn.disabled=false;}
+  }
+
+  function saveNewManualPermit(mode) {
+    const data=manualPermitData();if(!data)return;
+    if(mode==='matched') {
+      if(!matchedManualAddress || matchedManualAddress.input!==els.manualAddress.value.trim())return;
+      const {lat,lng,fullAddr}=matchedManualAddress;
+      els.manualPermitDialog.close();
+      createManualPermit(data,{lat,lng,matchMethod:'Boulder Address Points',matchedFullAddr:fullAddr});
+    } else if(mode==='place') {
+      pendingManualPlacement=data;
+      els.manualPermitDialog.close();
+      els.manualPinModeText.textContent=`Click the location for ${data.addressNumber} ${data.street}, or Cancel / Esc.`;
+      els.manualPinModeBar.hidden=false;
+      toast('Click the location on the map to save this new permit.');
+    } else {
+      els.manualPermitDialog.close();
+      createManualPermit(data,{lat:null,lng:null,matchMethod:'unlocated',locationIssue:'Manual record saved without a mapped location'});
+    }
+  }
+
+  function createManualPermit(data,placement) {
+    const time=new Date().toISOString();
+    state.permits.push({id:cryptoRandomId('permit'),origin:'manual',sourceFilename:'',relativePath:'',
+      addressNumber:data.addressNumber,street:data.street,workType:data.workType,contractor:data.contractor,
+      permitNumber:data.permitNumber,status:data.status,archived:false,startDate:'',endDate:'',rowImpact:'',notes:data.notes,
+      lat:placement.lat,lng:placement.lng,matchMethod:placement.matchMethod||'',matchedFullAddr:placement.matchedFullAddr||'',locationIssue:placement.locationIssue||'',
+      importedAt:'',createdAt:time,updatedAt:time});
+    saveState();renderAll();
+    if(isFiniteNumber(placement.lat)&&isFiniteNumber(placement.lng))map.setView([placement.lat,placement.lng],16);
+    toast('Manual permit record saved.');
+  }
+
   async function importNames(entries, opts={}) {
     if (!entries.length) {
       if (!opts.silent) toast('No PDF filenames found.');
       return;
     }
-    let added=0, known=0, invalid=0;
+    let added=0, known=0, invalid=0, linked=0;
     for (const entry of entries) {
       const parsed = parsePermitFilename(entry.name);
       if (!parsed) { invalid++; continue; }
@@ -576,8 +748,18 @@
         if (!existing.relativePath && entry.relativePath) existing.relativePath = entry.relativePath;
         continue;
       }
+      const matchingManual=state.permits.filter(p=>p.origin==='manual' && p.addressNumber.trim()===parsed.addressNumber.trim()
+        && normalizeMatch(p.street)===normalizeMatch(parsed.street)
+        && (!p.workType.trim() || normalizeMatch(p.workType)===normalizeMatch(parsed.workType)));
+      if(matchingManual.length===1 && confirm(`An existing manually added record matches ${parsed.addressNumber} ${parsed.street}.\n\nAttach the imported filename to that record while keeping its notes, location, and status?`)) {
+        const p=matchingManual[0];
+        Object.assign(p,{origin:'imported',sourceFilename:entry.name,relativePath:entry.relativePath||entry.name,
+          addressNumber:parsed.addressNumber,street:parsed.street,workType:parsed.workType,contractor:parsed.contractor,
+          updatedAt:new Date().toISOString()});
+        linked++;continue;
+      }
       state.permits.push({
-        id:cryptoRandomId('permit'), sourceFilename:entry.name, relativePath:entry.relativePath || entry.name,
+        id:cryptoRandomId('permit'), origin:'imported', sourceFilename:entry.name, relativePath:entry.relativePath || entry.name,
         addressNumber:parsed.addressNumber, street:parsed.street, workType:parsed.workType, contractor:parsed.contractor,
         permitNumber:'', status:'In Review', archived:false, startDate:'', endDate:'', rowImpact:'', notes:'',
         lat:null, lng:null, matchMethod:'', matchedFullAddr:'', importedAt:new Date().toISOString(), updatedAt:new Date().toISOString()
@@ -588,7 +770,7 @@
     refreshFilterOptions();
     await locateUnlocatedPermits({ quiet:true });
     renderAll();
-    if (!opts.silent) toast(`${added} added • ${known} already known${invalid ? ` • ${invalid} filename${invalid===1?'':'s'} skipped`:''}. No PDF contents read.`);
+      if (!opts.silent) toast(`${added} added • ${linked} linked to manual records • ${known} already known${invalid ? ` • ${invalid} filename${invalid===1?'':'s'} skipped`:''}. No PDF contents read.`);
   }
 
   function parsePermitFilename(filename) {
@@ -733,7 +915,7 @@
     const best=top.f;
     const facilityId=best.properties?.FACILITYID || `${venue.id}:${JSON.stringify(best.geometry).slice(0,100)}`;
     if ([...venueBuildingLayer.getLayers()].some(l=>l.options?.facilityId===facilityId)) return;
-    const layer=L.geoJSON(best,{ style:{ color:'#a8902f', weight:1.5, fillColor:'#d7c66d', fillOpacity:.32 }, onEachFeature:(_f,l)=>l.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Layer</span>Venue building</div>`) });
+    const layer=L.geoJSON(best,{ style:{ color:'#a8902f', weight:1.5, opacity:.9*state.appearance.buildingsOpacity, fillColor:'#d7c66d', fillOpacity:.32*state.appearance.buildingsOpacity }, onEachFeature:(_f,l)=>l.bindPopup(`<div class="popup-title">${escapeHtml(venue.name)}</div><div class="popup-row"><span class="popup-label">Layer</span>Venue building</div>`) });
     layer.options.facilityId=facilityId; layer.eachLayer(l=>{l.options.facilityId=facilityId;}); layer.addTo(venueBuildingLayer);
   }
 
@@ -745,9 +927,87 @@
     return score;
   }
 
+  // ---------------- Local focus areas ----------------
+  function startFocusDrawing(kind) {
+    if(corridorMode) cancelCorridorMode(true);
+    if(activeDrawHandler)try{activeDrawHandler.disable();}catch{}
+    els.focusActions.hidden=true;
+    focusMode=kind;
+    pendingFocus=null;
+    els.focusModeText.textContent=kind==='circle'?'Click and drag to draw a circle. Esc cancels.':'Click to trace the area; finish the polygon or Esc to cancel.';
+    els.focusModeBar.hidden=false;
+    document.body.classList.add('mode-selecting');
+    const opts={shapeOptions:{color:state.appearance.focusColor,weight:2,fillColor:state.appearance.focusColor,fillOpacity:state.appearance.focusOpacity},showArea:false};
+    activeDrawHandler=kind==='circle'?new L.Draw.Circle(map,opts):new L.Draw.Polygon(map,opts);
+    activeDrawHandler.enable();
+  }
+  function exitFocusMode() {
+    if(activeDrawHandler)try{activeDrawHandler.disable();}catch{}
+    activeDrawHandler=null;focusMode=null;
+    els.focusModeBar.hidden=true;
+    if(!corridorMode)document.body.classList.remove('mode-selecting');
+  }
+  function cancelFocusMode() { exitFocusMode();pendingFocus=null;toast('Focus area drawing cancelled.'); }
+  function saveFocusForm(e) {
+    if(e.submitter?.value==='cancel')return;
+    e.preventDefault();
+    const form=els.focusForm.elements;
+    const title=form.title.value.trim(),notes=form.notes.value.trim();
+    if(!title)return;
+    if(currentFocusId){const old=state.focusAreas.find(x=>x.id===currentFocusId);if(old)Object.assign(old,{title,notes,updatedAt:new Date().toISOString()});}
+    else if(pendingFocus)state.focusAreas.push({id:cryptoRandomId('focus'),...pendingFocus,title,notes,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+    else return;
+    currentFocusId=null;pendingFocus=null;
+    els.focusDialog.returnValue='default';els.focusDialog.close();
+    saveState();rebuildFocusAreas();toast('Focus area saved.');
+  }
+  function rebuildFocusAreas() {
+    if(!focusLayer)return;
+    focusLayer.clearLayers();
+    const a=state.appearance;
+    for(const area of state.focusAreas){
+      const opts={color:a.focusColor,weight:2,opacity:Math.min(1,a.focusOpacity+.15),fillColor:a.focusColor,fillOpacity:a.focusOpacity};
+      let layer=null;
+      if(area.kind==='circle'&&Array.isArray(area.center)&&Number(area.radius)>0)layer=L.circle(area.center,{...opts,radius:area.radius});
+      else if(area.kind==='polygon'&&area.points?.length>=3)layer=L.polygon(area.points,opts);
+      if(!layer)continue;
+      layer.bindPopup(`<div class="popup-title">${escapeHtml(area.title)}</div>${area.notes?`<div class="popup-row"><span class="popup-label">Notes</span>${escapeHtml(area.notes)}</div>`:''}<button class="popup-btn" data-focus-edit="${escapeAttr(area.id)}">Edit focus area</button>`).addTo(focusLayer);
+    }
+    renderFocusList();
+  }
+  function renderFocusList() {
+    if(!els.focusList)return;
+    if(!state.focusAreas.length){els.focusList.innerHTML='<div class="empty-state">No focus areas yet.</div>';return;}
+    els.focusList.innerHTML=state.focusAreas.map(f=>`<div class="record-card" data-focus="${escapeAttr(f.id)}"><div class="record-card-head"><div><div class="record-card-name">${escapeHtml(f.title)}</div><div class="record-card-meta">${f.kind==='circle'?'Circle':'Perimeter'}${f.notes?' · Notes added':''}</div></div><div class="record-card-actions"><button class="mini-action" data-action="zoom">View</button><button class="mini-action" data-action="edit">Edit</button><button class="mini-action" data-action="delete">×</button></div></div></div>`).join('');
+    els.focusList.querySelectorAll('[data-focus]').forEach(row=>row.addEventListener('click',e=>{
+      const btn=e.target.closest('button');if(!btn)return;
+      if(btn.dataset.action==='edit')editFocus(row.dataset.focus);
+      if(btn.dataset.action==='zoom')zoomFocus(row.dataset.focus);
+      if(btn.dataset.action==='delete')deleteFocus(row.dataset.focus);
+    }));
+  }
+  function editFocus(id) {
+    const area=state.focusAreas.find(x=>x.id===id);if(!area)return;
+    map.closePopup();currentFocusId=id;pendingFocus=null;
+    els.focusForm.elements.title.value=area.title;els.focusForm.elements.notes.value=area.notes||'';
+    els.focusDialog.returnValue='';els.focusDialog.showModal();
+  }
+  function zoomFocus(id) {
+    const area=state.focusAreas.find(x=>x.id===id);if(!area)return;
+    if(area.kind==='circle')map.fitBounds(L.circle(area.center,{radius:area.radius}).getBounds(),{padding:[45,45]});
+    else if(area.points?.length)map.fitBounds(area.points,{padding:[45,45]});
+  }
+  function deleteFocus(id) {
+    const area=state.focusAreas.find(x=>x.id===id);if(!area)return;
+    if(!confirm(`Delete focus area “${area.title}”?`))return;
+    state.focusAreas=state.focusAreas.filter(x=>x.id!==id);
+    saveState();rebuildFocusAreas();toast('Focus area deleted.');
+  }
+
   // ---------------- Corridor workflow ----------------
 
   function startStreetCorridorMode() {
+    if(focusMode)exitFocusMode();
     cancelCorridorMode(true);
     els.corridorActions.hidden=true;
     corridorMode='select-street'; selectedStreet=null; sectionStart=null; pendingCorridor=null;
@@ -755,6 +1015,7 @@
   }
 
   function startCustomCorridorMode() {
+    if(focusMode)exitFocusMode();
     cancelCorridorMode(true);
     els.corridorActions.hidden=true;
     corridorMode='draw-custom'; pendingCorridor=null;
@@ -1012,12 +1273,12 @@
       try {
         const geo=paths.length===1 ? turf.lineString(paths[0].map(([lat,lng])=>[lng,lat])) : turf.multiLineString(paths.map(path=>path.map(([lat,lng])=>[lng,lat])));
         const buffered=turf.buffer(geo,bufferFeet,{units:'feet'});
-        if (buffered) L.geoJSON(buffered,{ style:{ color:'#2e6f9e',weight:1,opacity:.22,fillColor:'#2e6f9e',fillOpacity:.055,dashArray:'4 5' }, interactive:false }).addTo(group);
+        if (buffered) L.geoJSON(buffered,{ style:{ color:state.appearance.corridorColor,weight:1,opacity:state.appearance.corridorsOpacity*.3,fillColor:state.appearance.corridorColor,fillOpacity:state.appearance.corridorsOpacity*.25 }, interactive:false }).addTo(group);
       } catch {}
     }
     const lines=[];
     for (const path of paths) {
-      const line=L.polyline(path,{ color:'#2e6f9e',weight:corridor.priority==='Primary'?5:3.5,opacity:.88 }).addTo(group);
+      const line=L.polyline(path,{ color:state.appearance.corridorColor,weight:corridor.priority==='Primary'?16:12,opacity:state.appearance.corridorsOpacity,lineCap:'round',lineJoin:'round' }).addTo(group);
       line.bindPopup(`<div class="popup-title">${escapeHtml(corridor.name)}</div><div class="popup-row"><span class="popup-label">Type</span>${escapeHtml(corridor.scope||'Corridor')}</div><div class="popup-row"><span class="popup-label">Priority</span>${escapeHtml(corridor.priority)}</div><div class="popup-row"><span class="popup-label">Context</span>${escapeHtml(String(corridor.bufferFeet||0))} ft</div>`);
       lines.push(line);
     }
@@ -1075,23 +1336,44 @@
   }
 
   function permitPopupHtml(p) {
-    return `<div><div class="popup-title">${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType))}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.locationNeedsReview?'<div class="popup-warning">Location flagged for staff review</div>':''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button></div>`;
+    return `<div><div class="popup-title">${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType)||'—')}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.locationNeedsReview?'<div class="popup-warning">Location flagged for staff review</div>':''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button></div>`;
   }
 
   function openPermitDialog(id) {
     const p=state.permits.find(x=>x.id===id); if (!p) return;
     currentPermitId=id; els.permitDialogTitle.textContent=displayAddress(p);
-    els.sourceBlock.innerHTML=`<div class="source-grid"><div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div><div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div><div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div><div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div></div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
+    els.sourceBlock.innerHTML=p.origin==='manual' ? `<div class="manual-record-note">Local record — no permit PDF imported.</div>`
+      : `<div class="source-grid"><div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div><div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div><div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div><div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div></div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
+    els.editManualAddressWrap.hidden=p.origin!=='manual';
+    if(p.origin==='manual')els.permitForm.elements.manualAddress.value=displayAddress(p);
     for (const key of ['permitNumber','status','startDate','endDate','rowImpact','notes','pinColorOverride','pinShapeOverride']) els.permitForm.elements[key].value=p[key]||'';
     els.permitForm.elements.locationNeedsReview.checked=!!p.locationNeedsReview;
     els.matchInfo.textContent=locationDescription(p); els.archivePermitBtn.textContent=p.archived?'Restore from archive':'Archive'; els.permitDialog.showModal();
   }
 
   function savePermitForm(e) { if (e.submitter?.value==='cancel') return; e.preventDefault(); const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); els.permitDialog.close(); renderAll(); toast('Permit record saved.'); }
-  function applyFormToPermit(p) { p.permitNumber=els.permitForm.elements.permitNumber.value; p.status=els.permitForm.elements.status.value; p.startDate=els.permitForm.elements.startDate.value; p.endDate=els.permitForm.elements.endDate.value; p.rowImpact=els.permitForm.elements.rowImpact.value; p.notes=els.permitForm.elements.notes.value; p.locationNeedsReview=els.permitForm.elements.locationNeedsReview.checked; p.pinColorOverride=els.permitForm.elements.pinColorOverride.value; p.pinShapeOverride=els.permitForm.elements.pinShapeOverride.value; p.updatedAt=new Date().toISOString(); }
+  function applyFormToPermit(p) {
+    let addressWasChanged=false;
+    if(p.origin==='manual') {
+      const parsed=splitAddress(els.permitForm.elements.manualAddress.value);
+      if(parsed) {
+        if(p.addressNumber!==parsed.addressNumber || normalizeMatch(p.street)!==normalizeMatch(parsed.street)) {
+          p.addressNumber=parsed.addressNumber;p.street=parsed.street;
+          addressWasChanged=true;
+          p.locationIssue='Address changed; confirm or retry map location';
+        }
+      }
+    }
+    p.permitNumber=els.permitForm.elements.permitNumber.value; p.status=els.permitForm.elements.status.value; p.startDate=els.permitForm.elements.startDate.value; p.endDate=els.permitForm.elements.endDate.value; p.rowImpact=els.permitForm.elements.rowImpact.value; p.notes=els.permitForm.elements.notes.value; p.locationNeedsReview=addressWasChanged||els.permitForm.elements.locationNeedsReview.checked; p.pinColorOverride=els.permitForm.elements.pinColorOverride.value; p.pinShapeOverride=els.permitForm.elements.pinShapeOverride.value; p.updatedAt=new Date().toISOString(); }
 
   function showManualPermitPlacement(p) { els.manualPinModeText.textContent=`Click the correct location for ${displayAddress(p)}, or Cancel / Esc.`; els.manualPinModeBar.hidden=false; }
-  function cancelManualPermitPlacement() { mapMovePermitId=null; manualPlacePermitId=null; els.manualPinModeBar.hidden=true; toast('Permit placement cancelled.'); }
+  function cancelManualPermitPlacement() {
+    const wasNew=!!pendingManualPlacement;
+    pendingManualPlacement=null;mapMovePermitId=null;manualPlacePermitId=null;
+    els.manualPinModeBar.hidden=true;
+    if (wasNew) els.manualPermitDialog.showModal();
+    toast('Permit placement cancelled.');
+  }
   function startMoveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); mapMovePermitId=p.id; els.permitDialog.close(); showManualPermitPlacement(p); }
 
   async function retryCurrentPermitLocation() {
@@ -1103,7 +1385,7 @@
 
   function deleteCurrentPermit() {
     const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return;
-    if (!confirm(`Permanently delete ${p.sourceFilename}?\n\nRe-importing the same filename later would create it again.`)) return;
+    if (!confirm(`Permanently delete ${p.sourceFilename||displayAddress(p)}?\n\n${p.sourceFilename?'Re-importing the filename later would create it again.':'This manually created record has no source PDF.'}`)) return;
     state.permits=state.permits.filter(x=>x.id!==p.id); saveState(); els.permitDialog.close(); renderAll(); toast('Permit permanently deleted from local data.');
   }
 
@@ -1114,7 +1396,7 @@
     const items=state.permits.filter(needsLocationReview).filter(p=>!query||[p.sourceFilename,p.locationIssue,p.matchMethod,p.contractor].join(' ').toLowerCase().includes(query));
     els.reviewDialogCount.textContent=`(${state.permits.filter(needsLocationReview).length})`;
     if (!items.length) { els.unlocatedList.innerHTML='<div class="empty-state">No location issues match. All mapped permits remain in your dataset.</div>'; return; }
-    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div class="review-record"><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small><span class="review-reason">${escapeHtml(p.locationNeedsReview?'Flagged by staff':(p.locationIssue||p.matchMethod||'No map location'))}</span><code title="Source filename">${escapeHtml(p.sourceFilename)}</code></div><div class="review-actions">${!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)?'<button class="button small" data-action="retry">Retry</button>':''}<button class="button small" data-action="place">Place on map</button><button class="button small" data-action="open">Open</button></div></div>`).join('');
+    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div class="review-record"><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small><span class="review-reason">${escapeHtml(p.locationNeedsReview?'Flagged by staff':(p.locationIssue||p.matchMethod||'No map location'))}</span>${p.sourceFilename?`<code title="Source filename">${escapeHtml(p.sourceFilename)}</code>`:'<small>Manually added</small>'}</div><div class="review-actions">${!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)?'<button class="button small" data-action="retry">Retry</button>':''}<button class="button small" data-action="place">Place on map</button><button class="button small" data-action="open">Open</button></div></div>`).join('');
     els.unlocatedList.querySelectorAll('.unlocated-row').forEach(row=>row.addEventListener('click',async e=>{
       const btn=e.target.closest('button'); if (!btn) return; const p=state.permits.find(x=>x.id===row.dataset.id); if (!p) return;
       if (btn.dataset.action==='retry') { btn.disabled=true; const ok=await locatePermit(p,true,false); saveState(); renderAll(); renderUnlocatedList(); if (ok) map.setView([p.lat,p.lng],17); }
@@ -1146,11 +1428,11 @@
     });
   }
 
-  function roadClassStyle(feature) {
+  function roadClassStyle(feature,group=null) {
     const designation=String(feature?.properties?.STREETCLASS || '');
     return {
       ...(ROAD_CLASS_STYLES[designation] || {color:'#ab0067',weight:1}),
-      opacity:1, lineCap:'round', lineJoin:'round'
+      opacity:state.appearance[group===ROAD_GROUPS.local?'localOpacity':'majorOpacity'], lineCap:'round', lineJoin:'round'
     };
   }
 
@@ -1158,9 +1440,37 @@
     const p=feature?.properties || {};
     const street=[p.PREDIR,p.STREETNAME,p.STREETTYPE,p.SUFFIX].filter(Boolean).join(' ') || 'Street segment';
     const designation=p.STREETCLASS || 'Not listed';
+    const key=streetSegmentKey(feature);
+    const notes=state.streetNotes[key]||'';
     return `<div class="popup-title">${escapeHtml(street)}</div>`+
       `<div class="popup-row"><span class="popup-label">Classification</span>${escapeHtml(designation)}</div>`+
+      (notes?`<div class="popup-row"><span class="popup-label">Notes</span><span>${escapeHtml(notes)}</span></div>`:'')+
+      `<button class="popup-btn" data-street-note="${escapeAttr(key)}" data-street-name="${escapeAttr(street)}" data-street-class="${escapeAttr(designation)}">${notes?'Edit':'Add'} segment notes</button>`+
       `<div class="road-reference-source">City of Boulder · Street Centerline GIS</div>`;
+  }
+
+  function streetSegmentKey(feature) {
+    const p=feature?.properties||{};
+    if(p.OBJECTID!==undefined && p.OBJECTID!==null) return `segment-${p.OBJECTID}`;
+    return `${streetKey(p)}-${JSON.stringify(feature.geometry?.coordinates?.[0]||'').slice(0,55)}`;
+  }
+  function openStreetNotes(key,name,classification) {
+    activeStreetNoteKey=key;
+    els.streetNotesTitle.textContent=name;
+    els.streetNotesClass.textContent=`${classification} · Notes are attached to this street segment.`;
+    els.streetNotesForm.elements.notes.value=state.streetNotes[key]||'';
+    els.streetNotesDialog.showModal();
+  }
+  function saveStreetNotes(e) {
+    if(e.submitter?.value==='cancel') return;
+    e.preventDefault();
+    const val=els.streetNotesForm.elements.notes.value.trim();
+    if(val) state.streetNotes[activeStreetNoteKey]=val;
+    else delete state.streetNotes[activeStreetNoteKey];
+    saveState();
+    els.streetNotesDialog.close();
+    map.closePopup();
+    toast('Street notes saved.');
   }
 
   function anyRoadGroupEnabled() {
@@ -1579,14 +1889,14 @@
   }
 
   function coneZonePointStyle() {
-    return { radius:6, color:'#fff', weight:2, fillColor:state.appearance.coneZonesColor, fillOpacity:.95 };
+    return { radius:8, color:state.appearance.coneZonesColor, weight:2, opacity:state.appearance.coneZonesOpacity, fillColor:state.appearance.coneZonesColor, fillOpacity:state.appearance.coneZonesOpacity };
   }
 
   function coneZoneStyle(feature) {
     const color=state.appearance.coneZonesColor;
     const type=feature?.geometry?.type || '';
-    if (/Polygon/i.test(type)) return { color, weight:2, opacity:.9, fillColor:color, fillOpacity:.16 };
-    return { color, weight:4, opacity:.88 };
+    if (/Polygon/i.test(type)) return { color, weight:1.5, opacity:Math.min(1,state.appearance.coneZonesOpacity+.15), fillColor:color, fillOpacity:state.appearance.coneZonesOpacity };
+    return { color, weight:14, opacity:state.appearance.coneZonesOpacity, lineCap:'round',lineJoin:'round' };
   }
 
   function repaintConeZones() {
@@ -1767,7 +2077,7 @@
   }
 
   function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(needsLocationReview).length; els.locationReviewCount.textContent=state.permits.filter(needsLocationReview).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); for (const group of Object.values(ROAD_GROUPS)) toggleLayer(group.layer,els[group.checkbox].checked); }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(focusLayer,els.layerFocusAreas.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); for (const group of Object.values(ROAD_GROUPS)) toggleLayer(group.layer,els[group.checkbox].checked); }
   function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
@@ -1777,12 +2087,12 @@
 
   function fitAll() {
     const points=[]; for (const p of filteredPermits()) if (isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)) points.push([p.lat,p.lng]); for (const v of venueRuntime.values()) points.push([v.lat,v.lng]); for (const c of state.corridors) for (const path of getCorridorPaths(c)) points.push(...path);
-    if (els.layerConeZones.checked && coneZonesLoaded && coneZonesLayer.getLayers().length) { const b=coneZonesLayer.getBounds(); if (b.isValid()) { points.push([b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]); } }
+    for(const area of state.focusAreas){if(area.kind==='circle')points.push(area.center);else if(area.points)points.push(...area.points);} if (els.layerConeZones.checked && coneZonesLoaded && coneZonesLayer.getLayers().length) { const b=coneZonesLayer.getBounds(); if (b.isValid()) { points.push([b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]); } }
     if (points.length) map.fitBounds(points,{padding:[35,35],maxZoom:16}); else map.setView(BOULDER_CENTER,13);
   }
 
   function exportBackup() {
-    const payload={ format:'pas-de-deux-backup', version:3, appearance:state.appearance, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors };
+    const payload={ format:'pas-de-deux-backup', version:3, appearance:state.appearance, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors,focusAreas:state.focusAreas,streetNotes:state.streetNotes };
     downloadBlob(`pas-de-deux-backup-${todayStamp()}.json`,JSON.stringify(payload,null,2),'application/json');
   }
 
@@ -1792,13 +2102,13 @@
       const payload=JSON.parse(await file.text()); const validFormat=['pas-de-deux-backup','sundance-row-map-backup'].includes(payload.format);
       if (!validFormat||!Array.isArray(payload.permits)||!Array.isArray(payload.corridors)) throw new Error('Not a Pas de Deux backup');
       if (!confirm(`Replace local data with this backup?\n\n${payload.permits.length} permits • ${payload.corridors.length} corridors`)) return;
-      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); repaintConeZones(); renderVenueContext(); renderVenueMarkers(); applyTheme(); rebuildCorridors(); renderAll(); toast('Backup imported.');
+      state=migrateState({initialized:true,permits:payload.permits,corridors:payload.corridors,focusAreas:payload.focusAreas||[],streetNotes:payload.streetNotes||{},appearance:payload.appearance||state.appearance}); saveState(); closeMarkerEditor(); initAppearanceControls(); repaintConeZones(); renderVenueContext(); renderVenueMarkers(); applyTheme(); rebuildCorridors(); rebuildFocusAreas();applyAllLayerOpacity();renderAll(); toast('Backup imported.');
     } catch (err) { toast(`Backup import failed: ${err.message||err}`); } finally { e.target.value=''; }
   }
 
   function exportCsv() {
-    const headers=['source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
-    const rows=state.permits.map(p=>[p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
+    const headers=['origin','source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
+    const rows=state.permits.map(p=>[p.origin||'imported',p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
     const csv=[headers,...rows].map(row=>row.map(csvCell).join(',')).join('\r\n'); downloadBlob(`pas-de-deux-permits-${todayStamp()}.csv`,csv,'text/csv;charset=utf-8');
   }
 
@@ -1827,19 +2137,23 @@
   }
 
   function loadState() {
-    try { const raw=localStorage.getItem(STORAGE_KEY); if (!raw) return {initialized:false,permits:[],corridors:[]}; const parsed=JSON.parse(raw); return {initialized:!!parsed.initialized,permits:Array.isArray(parsed.permits)?parsed.permits:[],corridors:Array.isArray(parsed.corridors)?parsed.corridors:[],appearance:parsed.appearance}; }
-    catch { return {initialized:false,permits:[],corridors:[]}; }
+    try { const raw=localStorage.getItem(STORAGE_KEY); if (!raw) return {initialized:false,permits:[],corridors:[],focusAreas:[],streetNotes:{}}; const parsed=JSON.parse(raw); return {initialized:!!parsed.initialized,permits:Array.isArray(parsed.permits)?parsed.permits:[],corridors:Array.isArray(parsed.corridors)?parsed.corridors:[],focusAreas:Array.isArray(parsed.focusAreas)?parsed.focusAreas:[],streetNotes:parsed.streetNotes&&typeof parsed.streetNotes==='object'&&!Array.isArray(parsed.streetNotes)?parsed.streetNotes:{},appearance:parsed.appearance}; }
+    catch { return {initialized:false,permits:[],corridors:[],focusAreas:[],streetNotes:{}}; }
   }
 
   function migrateState(input) {
     const candidate={...DEFAULT_APPEARANCE,...(input.appearance||{})};
-    const appearance={coneZonesColor:/^#[0-9a-f]{6}$/i.test(candidate.coneZonesColor)?candidate.coneZonesColor:'#c5283d',theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium',bufferColor:/^#[0-9a-f]{6}$/i.test(candidate.bufferColor)?candidate.bufferColor:'#8b5cf6',bufferOpacity:Number.isFinite(Number(candidate.bufferOpacity))?Math.min(.5,Math.max(.10,Number(candidate.bufferOpacity))):.25};
-    const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[],appearance};
+    const appearance={coneZonesColor:/^#[0-9a-f]{6}$/i.test(candidate.coneZonesColor)?candidate.coneZonesColor:'#c5283d',theme:['light','dark'].includes(candidate.theme)?candidate.theme:'light',pinColorMode:['status','single'].includes(candidate.pinColorMode)?candidate.pinColorMode:'single',pinColor:/^#[0-9a-f]{6}$/i.test(candidate.pinColor)?candidate.pinColor:'#1e779e',pinShape:['pin','circle','square','diamond'].includes(candidate.pinShape)?candidate.pinShape:'pin',pinSize:['small','medium','large'].includes(candidate.pinSize)?candidate.pinSize:'medium',venueColor:/^#[0-9a-f]{6}$/i.test(candidate.venueColor)?candidate.venueColor:'#ce913b',venueShape:['pin','circle','square','diamond'].includes(candidate.venueShape)?candidate.venueShape:'circle',venueSize:['small','medium','large'].includes(candidate.venueSize)?candidate.venueSize:'medium',bufferColor:/^#[0-9a-f]{6}$/i.test(candidate.bufferColor)?candidate.bufferColor:'#8b5cf6',bufferOpacity:Number.isFinite(Number(candidate.bufferOpacity))?Math.min(1,Math.max(0,Number(candidate.bufferOpacity))):.25};
+    const clampOpacity=(v,def)=>Number.isFinite(Number(v))?Math.max(0,Math.min(1,Number(v))):def;
+    for(const [category,key] of Object.entries(LAYER_OPACITY))if(category!=='buffers')appearance[key]=clampOpacity(candidate[key],DEFAULT_APPEARANCE[key]);
+    for(const key of ['corridorColor','focusColor'])appearance[key]=/^#[0-9a-f]{6}$/i.test(candidate[key])?candidate[key]:DEFAULT_APPEARANCE[key];
+    const output={initialized:!!input.initialized,permits:Array.isArray(input.permits)?input.permits:[],corridors:Array.isArray(input.corridors)?input.corridors:[],focusAreas:Array.isArray(input.focusAreas)?input.focusAreas:[],streetNotes:input.streetNotes&&typeof input.streetNotes==='object'&&!Array.isArray(input.streetNotes)?input.streetNotes:{},appearance};
     for (const p of output.permits) {
       if (p.status==='Application') p.status='Upcoming';
       if (p.status==='Archived') { p.status='Closed'; p.archived=true; }
       if (!STATUS_VALUES.includes(p.status)) p.status='In Review';
       if (typeof p.archived!=='boolean') p.archived=false;
+      if(!p.origin)p.origin=p.sourceFilename?'imported':'manual';
     }
     for (const c of output.corridors) {
       if (!Array.isArray(c.paths) && Array.isArray(c.latlngs)) c.paths=[c.latlngs];
