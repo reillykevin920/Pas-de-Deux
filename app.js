@@ -72,6 +72,8 @@
     { id:'canyon', name:'Canyon Theater — Boulder Public Library', addressNumber:'1001', street:'Arapahoe', address:'1001 Arapahoe Ave',lat:40.013957,lng:-105.281805, uses:'Talks & festival programming' }
   ];
   const STATUS_VALUES = ['In Review','Upcoming','Active','Closed'];
+  const RECORD_TYPES = ['permit','application','venue'];
+  const RECORD_TYPE_LABELS = {permit:'Permit',application:'Application',venue:'Venue'};
   const PIN_COLORS = ['#2563eb','#ea580c','#be123c','#0f766e','#7c3aed','#111827','#eab308','#e11d48'];
   const DEFAULT_APPEARANCE = {coneZonesColor:'#c5283d',corridorColor:'#2e6f9e',focusColor:'#8866bb',theme:'light',pinColorMode:'single',pinColor:'#1e779e',pinShape:'pin',pinSize:'medium',venueColor:'#ce913b',venueShape:'circle',venueSize:'medium',bufferColor:'#8b5cf6',bufferOpacity:.25,permitsOpacity:1,venuesOpacity:1,buildingsOpacity:.85,corridorsOpacity:.50,coneZonesOpacity:.50,majorOpacity:1,localOpacity:.80,focusOpacity:.40};
   const LAYER_OPACITY = {permits:'permitsOpacity',venues:'venuesOpacity',buildings:'buildingsOpacity',buffers:'bufferOpacity',corridors:'corridorsOpacity',coneZones:'coneZonesOpacity',major:'majorOpacity',local:'localOpacity',focus:'focusOpacity'};
@@ -92,6 +94,9 @@
   let focusMode=null;
   let pendingManualNew=null;
   let matchedManualAddress=null;
+  let manualAddressSearchAttempted=false;
+  let spreadsheetData=null;
+  let spreadsheetImportBusy=false;
   let pendingManualPlacement=null;
   let activeStreetNoteKey=null;
   let corridorPreviewLayer;
@@ -136,7 +141,7 @@
     if (!state.initialized) {
       state.initialized = true;
       saveState();
-      toast('Ready. Connect a permit folder or drop permit files onto the map. Only filenames are used.');
+      toast('Ready. Add an address pin, import an Excel/CSV spreadsheet, or import permit filenames.');
     }
 
     folderHandle = await idbGet('permitFolder');
@@ -152,8 +157,8 @@
 
   function cacheElements() {
     [
-      'editManualAddressWrap','addPermitBtn','manualPermitDialog','manualPermitForm','manualAddress','findManualAddressBtn','manualAddressStatus','manualAddressMatch','manualMatchedLabel','placeManualPermitBtn','saveManualNoPinBtn','saveManualMatchedBtn','streetNotesDialog','streetNotesForm','streetNotesTitle','streetNotesClass','focusDialog','focusForm','focusModeBar','focusModeText','cancelFocusModeBtn','addFocusBtn','focusActions','drawFocusCircleBtn','drawFocusPolygonBtn','focusList','layerFocusAreas','visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
-      'dataMenuBtn','dataMenu','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerMajorStreets','layerLocalStreets','roadStatus','roadMajorStatus','roadLocalStatus','streetClassLegend','fitAllBtn',
+      'editManualAddressWrap','addPermitBtn','recordDialogKicker','manualRecordType','importSpreadsheetBtn','spreadsheetFile','spreadsheetDialog','spreadsheetForm','sheetFilename','sheetRowCount','sheetDefaultType','sheetMappings','sheetImportStatus','sheetPreview','confirmSpreadsheetBtn','cancelSpreadsheetBtn','manualPermitDialog','manualPermitForm','manualAddress','findManualAddressBtn','manualAddressStatus','manualAddressMatch','manualMatchedLabel','placeManualPermitBtn','saveManualMatchedBtn','streetNotesDialog','streetNotesForm','streetNotesTitle','streetNotesClass','focusDialog','focusForm','focusModeBar','focusModeText','cancelFocusModeBtn','addFocusBtn','focusActions','drawFocusCircleBtn','drawFocusPolygonBtn','focusList','layerFocusAreas','visibleCount','totalCount','unlocatedCount','locationReviewCount','reviewDialogCount','venueStatus','manualPinModeBar','manualPinModeText','cancelManualPinBtn','showVenuesBtn','venueCountBadge','pinColorMode','pinPaletteControls','pinPalette','pinColorCustom','pinShape','pinSize','connectFolderBtn','filePicker','exportBtn','importBackup','exportCsvBtn','clearAllBtn',
+      'dataMenuBtn','dataMenu','layerApplications','layerCustomVenues','clearPermitsDialog','clearPermitsForm','clearPermitsCount','clearConfirmInput','confirmClearPermitsBtn','backupBeforeClearBtn','layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerConeZones','coneZonesStatus','layerMajorStreets','layerLocalStreets','roadStatus','roadMajorStatus','roadLocalStatus','streetClassLegend','fitAllBtn',
       'addCorridorBtn','corridorActions','selectStreetCorridorBtn','drawCorridorBtn','corridorList','searchFilter','statusFilters','workTypeFilter','contractorFilter','corridorOnlyFilter','venueOnlyFilter','hideClosedFilter','hideArchivedFilter',
       'resetFiltersBtn','showUnlocatedBtn','locationReviewSearch','retryAllLocationsBtn','map','dropZone','toast','corridorModeBar','corridorModeTitle','corridorModeText','cancelCorridorModeBtn',
       'mapKeyToggle','mapKeyBody','markerEditor','markerEditorTitle','closeMarkerEditor','pinColorModeWrap','pinPaletteLabel','bufferPaletteControls','bufferColor','bufferOpacity','bufferOpacityLabel','pinGeometryControls','permitDialog','permitForm','permitDialogTitle','sourceBlock','matchInfo','movePinBtn','retryLocateBtn','archivePermitBtn',
@@ -307,10 +312,12 @@
     if (state.appearance.pinColorMode==='single') return state.appearance.pinColor;
     return ({ 'In Review':'#718091', Upcoming:'#307fb4',Active:'#d97736',Closed:'#8f99a4' })[p.status] || '#718091';
   }
-  function pinShape(p) { return p.pinShapeOverride || state.appearance.pinShape; }
+  function recordType(p) { return RECORD_TYPES.includes(p?.recordType)?p.recordType:'permit'; }
+  function recordLabel(p) { return RECORD_TYPE_LABELS[recordType(p)]; }
+  function pinShape(p) { return p.pinShapeOverride || (recordType(p)==='application'?'diamond':recordType(p)==='venue'?'circle':state.appearance.pinShape); }
   function permitIcon(p) {
     const size=({small:17,medium:23,large:30})[state.appearance.pinSize]||23;
-    const shape=pinShape(p), color=pinColor(p);
+    const shape=pinShape(p), color=p.pinColorOverride||(recordType(p)==='application'?'#8854c0':recordType(p)==='venue'?'#b88c25':pinColor(p));
     const html=`<div class="pd-marker pd-${shape}${p.locationNeedsReview?' pd-flagged':''}" style="--pin-color:${color};--pin-size:${size}px"><span></span></div>`;
     return L.divIcon({className:'permit-div-icon',html,iconSize:[size+12,size+12],iconAnchor:[(size+12)/2,(size+12)/2],popupAnchor:[0,-size/2]});
   }
@@ -331,6 +338,8 @@
     const block=(category,html)=>`<div class="legend-layer-block">${html}${opacity(category)}</div>`;
     els.mapKeyBody.innerHTML=[
       block('permits',editable('permits',permitColors,'Permits')),
+      '<div class="legend-static-row"><i class="legend-marker pd-diamond" style="--pin-color:#8854c0"></i>Applications</div>',
+      '<div class="legend-static-row"><i class="legend-marker pd-circle" style="--pin-color:#b88c25"></i>Added venues</div>',
       block('venues',editable('venues',swatch(a.venueColor,a.venueShape),'Sundance sites')),
       block('buildings',staticRow('<i class="legend-buffer-swatch" style="--buffer-swatch:#d7c66d;--buffer-opacity:.35"></i>','Venue buildings')),
       block('buffers',editable('buffers',`<i class="legend-buffer-swatch" style="--buffer-swatch:${a.bufferColor};--buffer-opacity:${a.bufferOpacity}"></i>`,'500-ft venue context')),
@@ -464,10 +473,15 @@
   function bindUI() {
     els.connectFolderBtn.addEventListener('click', connectOrSyncFolder);
     els.addPermitBtn.addEventListener('click',openManualPermitDialog);
+    els.importSpreadsheetBtn.addEventListener('click',()=>els.spreadsheetFile.click());
+    els.spreadsheetFile.addEventListener('change',openSpreadsheetFromFile);
+    els.sheetMappings.addEventListener('change',refreshSpreadsheetPreview);
+    els.sheetDefaultType.addEventListener('change',refreshSpreadsheetPreview);
+    els.spreadsheetDialog.querySelectorAll('[data-sheet-type]').forEach(c=>c.addEventListener('change',refreshSpreadsheetPreview));
+    els.confirmSpreadsheetBtn.addEventListener('click',importSpreadsheetRows);
     els.findManualAddressBtn.addEventListener('click',findManualAddress);
-    els.manualAddress.addEventListener('input',()=>{ matchedManualAddress=null;els.manualAddressMatch.hidden=true;els.saveManualMatchedBtn.disabled=true;els.manualAddressStatus.textContent=''; });
+    els.manualAddress.addEventListener('input',()=>{ manualAddressSearchAttempted=false;matchedManualAddress=null;els.manualAddressMatch.hidden=true;els.saveManualMatchedBtn.disabled=true;els.manualAddressStatus.textContent=''; });
     els.saveManualMatchedBtn.addEventListener('click',()=>saveNewManualPermit('matched'));
-    els.saveManualNoPinBtn.addEventListener('click',()=>saveNewManualPermit('unlocated'));
     els.placeManualPermitBtn.addEventListener('click',()=>saveNewManualPermit('place'));
     els.manualPermitForm.addEventListener('submit',e=>e.preventDefault());
     els.streetNotesForm.addEventListener('submit',saveStreetNotes);
@@ -528,7 +542,8 @@
     });
     els.corridorForm.addEventListener('submit', saveCorridorForm);
 
-    ['layerPermits','layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerFocusAreas'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
+    ['layerPermits','layerApplications','layerCustomVenues'].forEach(id=>els[id].addEventListener('change',renderAll));
+    ['layerVenues','layerBuildings','layerVenueContext','layerCorridors','layerFocusAreas'].forEach(id => els[id].addEventListener('change', updateLayerVisibility));
     els.layerConeZones.addEventListener('change', async () => {
       updateLayerVisibility();
       if (els.layerConeZones.checked) await ensureConeZonesLoaded();
@@ -659,6 +674,7 @@
   function openManualPermitDialog() {
     els.manualPermitForm.reset();
     matchedManualAddress=null;
+    manualAddressSearchAttempted=false;
     els.manualAddressMatch.hidden=true;
     els.manualAddressStatus.textContent='';
     els.saveManualMatchedBtn.disabled=true;
@@ -668,7 +684,8 @@
   }
 
   function splitAddress(value) {
-    const match=String(value||'').trim().match(/^(\d+[A-Za-z]?)\s+(.+)$/);
+    const cleaned=String(value||'').trim().replace(/,\s*(?:Boulder|Colorado|CO)\b.*$/i,'').replace(/\s+Boulder\s*,?\s*CO(?:\s+\d{5}(?:-\d{4})?)?$/i,'').replace(/\s+(?:apt|apartment|unit|suite|ste)\s+[#A-Za-z0-9-]+$/i,'');
+    const match=cleaned.match(/^(\d+[A-Za-z]?)\s+(.+)$/);
     return match?{addressNumber:match[1],street:match[2].trim()}:null;
   }
   function manualPermitData() {
@@ -676,13 +693,15 @@
     const form=els.manualPermitForm.elements;
     const location=splitAddress(form.address.value);
     if(!location) {els.manualAddressStatus.textContent='Enter a street number and street name.';els.manualAddress.focus();return null;}
-    return {...location,workType:form.workType.value.trim(),contractor:form.contractor.value.trim(),permitNumber:form.permitNumber.value.trim(),status:form.status.value,notes:form.notes.value.trim()};
+    if(form.recordType.value==='venue'&&!form.recordName.value.trim()){els.manualAddressStatus.textContent='Enter a venue name.';return null;}
+    return {...location,recordType:form.recordType.value,recordName:form.recordName.value.trim(),workType:form.workType.value.trim(),contractor:form.contractor.value.trim(),permitNumber:form.permitNumber.value.trim(),status:form.status.value,notes:form.notes.value.trim()};
   }
 
   async function findManualAddress() {
     const info=splitAddress(els.manualAddress.value);
     if(!info) {els.manualAddressStatus.textContent='Enter a number and street, such as 2032 14th St.';return;}
     matchedManualAddress=null;
+    manualAddressSearchAttempted=true;
     els.manualAddressMatch.hidden=true;
     els.saveManualMatchedBtn.disabled=true;
     els.findManualAddressBtn.disabled=true;
@@ -704,6 +723,7 @@
 
   function saveNewManualPermit(mode) {
     const data=manualPermitData();if(!data)return;
+    if(mode==='place'&&!manualAddressSearchAttempted){els.manualAddressStatus.textContent='Search the address first. Manual placement is available if the match is unsuitable.';return;}
     if(mode==='matched') {
       if(!matchedManualAddress || matchedManualAddress.input!==els.manualAddress.value.trim())return;
       const {lat,lng,fullAddr}=matchedManualAddress;
@@ -712,25 +732,229 @@
     } else if(mode==='place') {
       pendingManualPlacement=data;
       els.manualPermitDialog.close();
-      els.manualPinModeText.textContent=`Click the location for ${data.addressNumber} ${data.street}, or Cancel / Esc.`;
+      els.manualPinModeText.textContent=`Place ${RECORD_TYPE_LABELS[recordType(data)]} at ${data.addressNumber} ${data.street}, or Cancel / Esc.`;
       els.manualPinModeBar.hidden=false;
       toast('Click the location on the map to save this new permit.');
-    } else {
-      els.manualPermitDialog.close();
-      createManualPermit(data,{lat:null,lng:null,matchMethod:'unlocated',locationIssue:'Manual record saved without a mapped location'});
     }
   }
 
   function createManualPermit(data,placement) {
     const time=new Date().toISOString();
-    state.permits.push({id:cryptoRandomId('permit'),origin:'manual',sourceFilename:'',relativePath:'',
+    state.permits.push({id:cryptoRandomId('permit'),origin:'manual',recordType:recordType(data),recordName:data.recordName||'',sourceFilename:'',relativePath:'',
       addressNumber:data.addressNumber,street:data.street,workType:data.workType,contractor:data.contractor,
       permitNumber:data.permitNumber,status:data.status,archived:false,startDate:'',endDate:'',rowImpact:'',notes:data.notes,
       lat:placement.lat,lng:placement.lng,matchMethod:placement.matchMethod||'',matchedFullAddr:placement.matchedFullAddr||'',locationIssue:placement.locationIssue||'',
       importedAt:'',createdAt:time,updatedAt:time});
     saveState();renderAll();
     if(isFiniteNumber(placement.lat)&&isFiniteNumber(placement.lng))map.setView([placement.lat,placement.lng],16);
-    toast('Manual permit record saved.');
+    toast(`${recordLabel(data)} pin saved.`);
+  }
+
+  // Excel and CSV files are read locally. Only address lookup queries reach Boulder GIS.
+  const SHEET_FIELDS = [
+    {key:'address',label:'Full street address',aliases:['full address','site address','project address','location address','property address','street address','address','address line 1']},
+    {key:'number',label:'Street number (if separate)',aliases:['address number','street number','house number','addrnum']},
+    {key:'street',label:'Street name (if separate)',aliases:['street name','street','road name']},
+    {key:'recordType',label:'Pin category (optional)',aliases:['record category','record type','pin type','pin category','location category']},
+    {key:'recordName',label:'Name / title',aliases:['venue name','project name','project title','business name','location name','name','title']},
+    {key:'permitNumber',label:'Permit / application number',aliases:['permit number','permit #','permit no','permit id','application number','application #','record number','record id','case number','case #','case id','permit_number','permitnumber']},
+    {key:'workType',label:'Work type / description',aliases:['work type','work description','type of work','project description','description','scope of work']},
+    {key:'contractor',label:'Contractor / applicant',aliases:['contractor','contractor name','applicant','applicant name','company']},
+    {key:'sourceStatus',label:'Source status',aliases:['permit status','application status','record status','status']},
+    {key:'startDate',label:'Start date',aliases:['start date','proposed start date','work start date','start']},
+    {key:'endDate',label:'End date',aliases:['end date','expiration date','work end date','end']},
+    {key:'notes',label:'Notes',aliases:['comments','remarks','notes','special notes']}
+  ];
+
+  function canonicalHeader(value) { return String(value??'').trim().toLowerCase().replace(/[_\-#./]/g,' ').replace(/\s+/g,' ').trim(); }
+  function chooseColumn(headers,field) {
+    const aliases=field.aliases.map(canonicalHeader);
+    for (const alias of aliases) {
+      const exact=headers.findIndex(h=>canonicalHeader(h)===alias);
+      if(exact>=0)return exact;
+    }
+    return -1;
+  }
+  function parseDelimited(text) {
+    const src=String(text??'').replace(/^\uFEFF/,'');
+    const headerLine=src.split(/\r?\n/,1)[0];
+    const delimiter=['\t',',',';'].sort((a,b)=>headerLine.split(b).length-headerLine.split(a).length)[0];
+    const rows=[];let row=[],cell='',quoted=false;
+    for(let i=0;i<src.length;i++) {
+      const c=src[i];
+      if(quoted) {
+        if(c==='"'&&src[i+1]==='"'){cell+='"';i++;}
+        else if(c==='"')quoted=false;
+        else cell+=c;
+      } else if(c==='"'&&cell==='')quoted=true;
+      else if(c===delimiter){row.push(cell);cell='';}
+      else if(c==='\n'||c==='\r') {
+        if(c==='\r'&&src[i+1]==='\n')i++;
+        row.push(cell);if(row.some(v=>String(v).trim()))rows.push(row);
+        row=[];cell='';
+      } else cell+=c;
+    }
+    row.push(cell);if(row.some(v=>String(v).trim()))rows.push(row);
+    return rows;
+  }
+
+  async function openSpreadsheetFromFile(e) {
+    const file=e.target.files?.[0];e.target.value='';if(!file)return;
+    try {
+      let table=[];
+      if(/\.csv$|\.tsv$/i.test(file.name)||/^text\/(csv|plain|tab-separated-values)/i.test(file.type)) {
+        table=parseDelimited(await file.text());
+      } else if(/\.xlsx?$|\.xls$/i.test(file.name)) {
+        if(!window.XLSX)throw new Error('Excel reader could not load. Check your connection or export the file as CSV.');
+        const wb=window.XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
+        const first=wb.SheetNames.find(name=>wb.Sheets[name] && window.XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,blankrows:false}).length>0);
+        if(!first)throw new Error('No spreadsheet rows found.');
+        table=window.XLSX.utils.sheet_to_json(wb.Sheets[first],{header:1,defval:'',raw:false,blankrows:false});
+      } else throw new Error('Choose an Excel (.xlsx/.xls) or CSV file.');
+      if(table.length<2)throw new Error('Include a header row and at least one record.');
+      const headers=table[0].map(x=>String(x??'').trim());
+      if(!headers.some(Boolean))throw new Error('No column headings found.');
+      const rows=table.slice(1).map((cells,i)=>({cells,sourceRow:i+2})).filter(x=>x.cells.some(v=>String(v??'').trim()));
+      if(!rows.length)throw new Error('There are no populated rows.');
+      if(rows.length>20000)throw new Error('Please import up to 20,000 rows at a time.');
+      spreadsheetData={filename:file.name,headers,rows};
+      els.sheetFilename.textContent=file.name;
+      els.sheetRowCount.textContent=String(rows.length);
+      els.sheetImportStatus.dataset.error='false';
+      els.sheetMappings.innerHTML=SHEET_FIELDS.map(field=>{
+        const selected=chooseColumn(headers,field);
+        return `<label class="field"><span>${escapeHtml(field.label)}</span><select data-sheet-field="${field.key}"><option value="-1">— Not included —</option>${headers.map((name,i)=>`<option value="${i}"${i===selected?' selected':''}>${escapeHtml(name||`Column ${i+1}`)}</option>`).join('')}</select></label>`;
+      }).join('');
+      els.spreadsheetDialog.returnValue='';
+      refreshSpreadsheetPreview();
+      els.spreadsheetDialog.showModal();
+    } catch(err){toast(`Spreadsheet could not be opened: ${err.message||err}`);}
+  }
+
+  function selectedSheetMappings() {
+    const mapping={};
+    for(const input of els.sheetMappings.querySelectorAll('select[data-sheet-field]'))mapping[input.dataset.sheetField]=Number(input.value);
+    return mapping;
+  }
+  function rowField(cells,mapping,key) {
+    const index=mapping[key];
+    return index>=0?String(cells[index]??'').trim():'';
+  }
+  function normalizeSheetCategory(raw,fallback) {
+    const val=canonicalHeader(raw);
+    if(!val)return fallback;
+    if(/\bvenue\b|\bevent site\b|\bfacility\b/.test(val))return 'venue';
+    if(/\bapplication\b|\bapplied\b|\bproposed\b/.test(val))return 'application';
+    if(/\bpermit\b|\bissued\b/.test(val))return 'permit';
+    return fallback;
+  }
+  function normalizeSheetRow(source,mapping) {
+    const get=key=>rowField(source.cells,mapping,key);
+    const rawAddress=get('address')||[get('number'),get('street')].filter(Boolean).join(' ');
+    const location=splitAddress(rawAddress);
+    const category=normalizeSheetCategory(get('recordType'),els.sheetDefaultType.value);
+    return {sourceRow:source.sourceRow,addressRaw:rawAddress,location,recordType:category,
+      recordName:get('recordName'),permitNumber:get('permitNumber'),workType:get('workType'),contractor:get('contractor'),
+      sourceStatus:get('sourceStatus'),startDate:get('startDate'),endDate:get('endDate'),notes:get('notes')};
+  }
+  function includedSheetTypes() { return new Set([...els.spreadsheetDialog.querySelectorAll('[data-sheet-type]:checked')].map(x=>x.dataset.sheetType)); }
+
+  function refreshSpreadsheetPreview() {
+    if(!spreadsheetData)return;
+    const mapping=selectedSheetMappings(),allowed=includedSheetTypes();
+    const hasAddress=mapping.address>=0 || (mapping.number>=0&&mapping.street>=0);
+    const rows=spreadsheetData.rows.map(source=>normalizeSheetRow(source,mapping));
+    const accepted=rows.filter(row=>allowed.has(row.recordType)&&row.location);
+    const excluded=rows.filter(row=>!allowed.has(row.recordType)).length;
+    const missing=rows.filter(row=>allowed.has(row.recordType)&&!row.location).length;
+    els.confirmSpreadsheetBtn.disabled=!hasAddress||!accepted.length||spreadsheetImportBusy;
+    els.sheetImportStatus.dataset.error=hasAddress?'false':'true';
+    els.sheetImportStatus.textContent= !hasAddress?'Select a full street address column, or both the number and street columns.'
+      : `${accepted.length} rows ready for address lookup · ${excluded} excluded by pin-type toggles · ${missing} rows lack a valid street address and will be skipped.`;
+    const preview=rows.slice(0,8);
+    els.sheetPreview.innerHTML=`<table><thead><tr><th>Spreadsheet row</th><th>Pin type</th><th>Address</th><th>Name / #</th></tr></thead><tbody>${preview.map(row=>{
+      const active=allowed.has(row.recordType),valid=!!row.location;
+      return `<tr class="${!active?'sheet-skipped':!valid?'sheet-invalid':''}"><td>${row.sourceRow}${!valid?' · no address':''}</td><td>${escapeHtml(RECORD_TYPE_LABELS[row.recordType])}${!active?' · excluded':''}</td><td>${escapeHtml(row.addressRaw||'—')}</td><td>${escapeHtml(row.recordName||row.permitNumber||'—')}</td></tr>`;
+    }).join('')}</tbody></table><div class="sheet-table-note">Preview shows ${preview.length} of ${rows.length} rows. Unmatched City addresses are kept for location review after import.</div>`;
+  }
+
+  async function importSpreadsheetRows() {
+    if(spreadsheetImportBusy||!spreadsheetData)return;
+    const mapping=selectedSheetMappings(),allowed=includedSheetTypes();
+    if(mapping.address<0&&(mapping.number<0||mapping.street<0))return;
+    const selected=spreadsheetData.rows.map(source=>normalizeSheetRow(source,mapping)).filter(row=>allowed.has(row.recordType)&&row.location);
+    if(!selected.length)return;
+    spreadsheetImportBusy=true;els.confirmSpreadsheetBtn.disabled=true;els.cancelSpreadsheetBtn.disabled=true;
+    const filename=spreadsheetData.filename;let added=0,updated=0,unchanged=0;
+    const toLocate=[];const now=new Date().toISOString();
+    try {
+      const existingKeys=new Map(state.permits.filter(p=>p.origin==='spreadsheet'&&p.spreadsheetKey).map(p=>[p.spreadsheetKey,p]));
+      const seen=new Set();
+      for(const row of selected) {
+        const normalizedAddress=`${row.location.addressNumber}|${normalizeMatch(row.location.street)}`;
+        // Record numbers are stable across renamed export files. Without a number, an identical
+        // source row is only skipped if the same file and contents are imported again.
+        const key=row.permitNumber
+          ? `id:${row.recordType}:${row.permitNumber.toLowerCase()}`
+          : `no-id:${filename.toLowerCase()}:${row.recordType}:${normalizedAddress}:${JSON.stringify([row.recordName,row.workType,row.contractor,row.sourceStatus,row.startDate,row.endDate,row.notes])}`;
+        if(seen.has(key)){unchanged++;continue;}seen.add(key);
+        const prior=existingKeys.get(key);
+        if(prior) {
+          const wasAddress=`${prior.addressNumber}|${normalizeMatch(prior.street)}`;
+          prior.addressNumber=row.location.addressNumber;prior.street=row.location.street;
+          prior.sourceAddress=row.addressRaw;prior.recordName=row.recordName;prior.workType=row.workType;
+          prior.contractor=row.contractor;prior.permitNumber=row.permitNumber;
+          prior.sourceStatus=row.sourceStatus;prior.sourceStartDate=row.startDate;prior.sourceEndDate=row.endDate;prior.spreadsheetSource=filename;
+          // Preserve manually entered notes and verified manual pin placement.
+          if(!prior.notes)prior.notes=row.notes;
+          if(!prior.startDate)prior.startDate=safeSheetDate(row.startDate);
+          if(!prior.endDate)prior.endDate=safeSheetDate(row.endDate);
+          if(wasAddress!==normalizedAddress){
+            prior.lat=null;prior.lng=null;prior.matchMethod='unlocated';
+            prior.locationIssue='Spreadsheet address changed; location needs rematching';
+          }
+          prior.updatedAt=now;updated++;
+          if(!isFiniteNumber(prior.lat)||!isFiniteNumber(prior.lng))toLocate.push(prior);
+        } else {
+          const p={id:cryptoRandomId('permit'),origin:'spreadsheet',recordType:row.recordType,recordName:row.recordName,
+            spreadsheetKey:key,spreadsheetSource:filename,sourceAddress:row.addressRaw,sourceStatus:row.sourceStatus,
+            sourceFilename:'',relativePath:'',addressNumber:row.location.addressNumber,street:row.location.street,
+            workType:row.workType,contractor:row.contractor,permitNumber:row.permitNumber,status:knownSheetStatus(row.sourceStatus),archived:false,
+            startDate:safeSheetDate(row.startDate),endDate:safeSheetDate(row.endDate),rowImpact:'',notes:row.notes,
+            lat:null,lng:null,locationIssue:'Waiting for Boulder address lookup',locationNeedsReview:false,
+            matchedFullAddr:'',matchMethod:'unlocated',importedAt:now,createdAt:now,updatedAt:now};
+          state.permits.push(p);existingKeys.set(key,p);toLocate.push(p);added++;
+        }
+      }
+      saveState();renderAll();
+      els.sheetImportStatus.textContent=`${added} added · ${updated} updated · ${unchanged} repeated rows skipped. Looking up ${toLocate.length} street addresses…`;
+      let finished=0,located=0;
+      // Limit concurrent requests to avoid flooding the City's public GIS endpoint.
+      let cursor=0;const workers=Array.from({length:Math.min(4,toLocate.length)},async()=>{
+        while(cursor<toLocate.length){
+          const p=toLocate[cursor++];
+          if(await locatePermit(p,true,true))located++;
+          finished++;
+          if(finished%8===0||finished===toLocate.length){
+            saveState();renderAll();
+            els.sheetImportStatus.textContent=`Geocoding ${finished}/${toLocate.length} · ${located} located. Unmatched addresses remain available for review.`;
+          }
+        }
+      });
+      await Promise.all(workers);
+      saveState();renderAll();
+      els.sheetImportStatus.textContent=`Complete: ${added} added, ${updated} updated, ${unchanged} duplicates skipped. ${located} addresses matched; ${toLocate.length-located} need location review.`;
+      toast(`Spreadsheet imported: ${added} added · ${updated} updated · ${located} addresses matched.`);
+    } catch(err){els.sheetImportStatus.dataset.error='true';els.sheetImportStatus.textContent=`Import interrupted: ${err.message||err}. Saved records remain available.`;}
+    finally {spreadsheetImportBusy=false;els.cancelSpreadsheetBtn.disabled=false;els.confirmSpreadsheetBtn.disabled=true;}
+  }
+  function knownSheetStatus(raw) { const match=STATUS_VALUES.find(value=>value.toLowerCase()===String(raw??'').trim().toLowerCase());return match||'In Review'; }
+  function safeSheetDate(text) {
+    const value=String(text??'').trim();
+    if(/^\d{4}-\d{2}-\d{2}$/.test(value))return value;
+    const m=value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m&&Number(m[1])<=12&&Number(m[2])<=31)return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+    return '';
   }
 
   async function importNames(entries, opts={}) {
@@ -748,7 +972,7 @@
         if (!existing.relativePath && entry.relativePath) existing.relativePath = entry.relativePath;
         continue;
       }
-      const matchingManual=state.permits.filter(p=>p.origin==='manual' && p.addressNumber.trim()===parsed.addressNumber.trim()
+      const matchingManual=state.permits.filter(p=>p.origin==='manual' && recordType(p)==='permit' && p.addressNumber.trim()===parsed.addressNumber.trim()
         && normalizeMatch(p.street)===normalizeMatch(parsed.street)
         && (!p.workType.trim() || normalizeMatch(p.workType)===normalizeMatch(parsed.workType)));
       if(matchingManual.length===1 && confirm(`An existing manually added record matches ${parsed.addressNumber} ${parsed.street}.\n\nAttach the imported filename to that record while keeping its notes, location, and status?`)) {
@@ -1328,7 +1552,7 @@
     for (const permit of filteredPermits()) {
       if (!isFiniteNumber(permit.lat)||!isFiniteNumber(permit.lng)) continue;
       const icon=permitIcon(permit);
-      const marker=L.marker([permit.lat,permit.lng],{icon,title:displayAddress(permit)});
+      const marker=L.marker([permit.lat,permit.lng],{icon,title:permit.recordName?`${permit.recordName} — ${displayAddress(permit)}`:displayAddress(permit)});
       marker.bindPopup(permitPopupHtml(permit));
       marker.on('popupopen',e=>{ const button=e.popup.getElement()?.querySelector('[data-edit-permit]'); if (button) button.addEventListener('click',()=>openPermitDialog(permit.id),{once:true}); });
       permitCluster.addLayer(marker);
@@ -1336,25 +1560,28 @@
   }
 
   function permitPopupHtml(p) {
-    return `<div><div class="popup-title">${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType)||'—')}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.locationNeedsReview?'<div class="popup-warning">Location flagged for staff review</div>':''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open permit record</button></div>`;
+    return `<div><div class="popup-title">${escapeHtml(p.recordName||displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Type</span>${escapeHtml(recordLabel(p))}</div><div class="popup-row"><span class="popup-label">Address</span>${escapeHtml(displayAddress(p))}</div><div class="popup-row"><span class="popup-label">Work</span>${escapeHtml(prettySource(p.workType)||'—')}</div><div class="popup-row"><span class="popup-label">Contractor</span>${escapeHtml(prettySource(p.contractor))}</div>${p.permitNumber?`<div class="popup-row"><span class="popup-label">Permit</span>${escapeHtml(p.permitNumber)}</div>`:''}<div class="popup-row"><span class="popup-label">Status</span>${escapeHtml(p.status)}${p.archived?' • Archived':''}</div>${p.rowImpact?`<div class="popup-row"><span class="popup-label">Impact</span>${escapeHtml(p.rowImpact)}</div>`:''}${p.locationNeedsReview?'<div class="popup-warning">Location flagged for staff review</div>':''}${p.sourceStatus?`<div class="popup-row"><span class="popup-label">Source status</span>${escapeHtml(p.sourceStatus)}</div>`:''}${p.startDate||p.endDate?`<div class="popup-row"><span class="popup-label">Dates</span>${escapeHtml(p.startDate||'—')} → ${escapeHtml(p.endDate||'—')}</div>`:''}<button class="popup-btn" data-edit-permit="${escapeHtml(p.id)}">Open record</button></div>`;
   }
 
   function openPermitDialog(id) {
     const p=state.permits.find(x=>x.id===id); if (!p) return;
-    currentPermitId=id; els.permitDialogTitle.textContent=displayAddress(p);
-    els.sourceBlock.innerHTML=p.origin==='manual' ? `<div class="manual-record-note">Local record — no permit PDF imported.</div>`
+    currentPermitId=id; els.permitDialogTitle.textContent=p.recordName||displayAddress(p);
+    els.recordDialogKicker.textContent=recordLabel(p)+' record';
+    els.sourceBlock.innerHTML=p.origin!=='imported' ? `<div class="manual-record-note">${p.origin==='spreadsheet'?'Spreadsheet import: '+escapeHtml(p.spreadsheetSource||'')+(p.sourceStatus?' · Source status: '+escapeHtml(p.sourceStatus):''):'Locally added record'} — no PDF attached.</div>`
       : `<div class="source-grid"><div class="source-item"><strong>Address # — source</strong>${escapeHtml(p.addressNumber)}</div><div class="source-item"><strong>Street — source</strong>${escapeHtml(p.street)}</div><div class="source-item"><strong>Work type — source</strong>${escapeHtml(p.workType)}</div><div class="source-item"><strong>Contractor — source</strong>${escapeHtml(p.contractor)}</div></div><div class="source-filename">${escapeHtml(p.sourceFilename)}</div>`;
-    els.editManualAddressWrap.hidden=p.origin!=='manual';
-    if(p.origin==='manual')els.permitForm.elements.manualAddress.value=displayAddress(p);
+    els.editManualAddressWrap.hidden=p.origin==='imported';
+    if(p.origin!=='imported')els.permitForm.elements.manualAddress.value=displayAddress(p);
+    els.permitForm.elements.recordType.value=recordType(p);
+    els.permitForm.elements.recordName.value=p.recordName||'';
     for (const key of ['permitNumber','status','startDate','endDate','rowImpact','notes','pinColorOverride','pinShapeOverride']) els.permitForm.elements[key].value=p[key]||'';
     els.permitForm.elements.locationNeedsReview.checked=!!p.locationNeedsReview;
     els.matchInfo.textContent=locationDescription(p); els.archivePermitBtn.textContent=p.archived?'Restore from archive':'Archive'; els.permitDialog.showModal();
   }
 
-  function savePermitForm(e) { if (e.submitter?.value==='cancel') return; e.preventDefault(); const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); els.permitDialog.close(); renderAll(); toast('Permit record saved.'); }
+  function savePermitForm(e) { if (e.submitter?.value==='cancel') return; e.preventDefault(); const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); els.permitDialog.close(); renderAll(); toast(`${recordLabel(p)} record saved.`); }
   function applyFormToPermit(p) {
     let addressWasChanged=false;
-    if(p.origin==='manual') {
+    if(p.origin!=='imported') {
       const parsed=splitAddress(els.permitForm.elements.manualAddress.value);
       if(parsed) {
         if(p.addressNumber!==parsed.addressNumber || normalizeMatch(p.street)!==normalizeMatch(parsed.street)) {
@@ -1364,6 +1591,7 @@
         }
       }
     }
+    p.recordType=els.permitForm.elements.recordType.value;p.recordName=els.permitForm.elements.recordName.value.trim();
     p.permitNumber=els.permitForm.elements.permitNumber.value; p.status=els.permitForm.elements.status.value; p.startDate=els.permitForm.elements.startDate.value; p.endDate=els.permitForm.elements.endDate.value; p.rowImpact=els.permitForm.elements.rowImpact.value; p.notes=els.permitForm.elements.notes.value; p.locationNeedsReview=addressWasChanged||els.permitForm.elements.locationNeedsReview.checked; p.pinColorOverride=els.permitForm.elements.pinColorOverride.value; p.pinShapeOverride=els.permitForm.elements.pinShapeOverride.value; p.updatedAt=new Date().toISOString(); }
 
   function showManualPermitPlacement(p) { els.manualPinModeText.textContent=`Click the correct location for ${displayAddress(p)}, or Cancel / Esc.`; els.manualPinModeBar.hidden=false; }
@@ -1372,7 +1600,7 @@
     pendingManualPlacement=null;mapMovePermitId=null;manualPlacePermitId=null;
     els.manualPinModeBar.hidden=true;
     if (wasNew) els.manualPermitDialog.showModal();
-    toast('Permit placement cancelled.');
+    toast('Pin placement cancelled.');
   }
   function startMoveCurrentPermit() { const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return; applyFormToPermit(p); saveState(); mapMovePermitId=p.id; els.permitDialog.close(); showManualPermitPlacement(p); }
 
@@ -1386,7 +1614,7 @@
   function deleteCurrentPermit() {
     const p=state.permits.find(x=>x.id===currentPermitId); if (!p) return;
     if (!confirm(`Permanently delete ${p.sourceFilename||displayAddress(p)}?\n\n${p.sourceFilename?'Re-importing the filename later would create it again.':'This manually created record has no source PDF.'}`)) return;
-    state.permits=state.permits.filter(x=>x.id!==p.id); saveState(); els.permitDialog.close(); renderAll(); toast('Permit permanently deleted from local data.');
+    state.permits=state.permits.filter(x=>x.id!==p.id); saveState(); els.permitDialog.close(); renderAll(); toast('Local record permanently deleted.');
   }
 
   function needsLocationReview(p) { return !!p.locationNeedsReview || !isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)||p.matchMethod==='ambiguous'; }
@@ -1396,7 +1624,7 @@
     const items=state.permits.filter(needsLocationReview).filter(p=>!query||[p.sourceFilename,p.locationIssue,p.matchMethod,p.contractor].join(' ').toLowerCase().includes(query));
     els.reviewDialogCount.textContent=`(${state.permits.filter(needsLocationReview).length})`;
     if (!items.length) { els.unlocatedList.innerHTML='<div class="empty-state">No location issues match. All mapped permits remain in your dataset.</div>'; return; }
-    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div class="review-record"><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small><span class="review-reason">${escapeHtml(p.locationNeedsReview?'Flagged by staff':(p.locationIssue||p.matchMethod||'No map location'))}</span>${p.sourceFilename?`<code title="Source filename">${escapeHtml(p.sourceFilename)}</code>`:'<small>Manually added</small>'}</div><div class="review-actions">${!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)?'<button class="button small" data-action="retry">Retry</button>':''}<button class="button small" data-action="place">Place on map</button><button class="button small" data-action="open">Open</button></div></div>`).join('');
+    els.unlocatedList.innerHTML=items.map(p=>`<div class="unlocated-row" data-id="${escapeHtml(p.id)}"><div class="review-record"><strong>${escapeHtml(displayAddress(p))}</strong><small>${escapeHtml(prettySource(p.workType))} • ${escapeHtml(prettySource(p.contractor))}</small><span class="review-reason">${escapeHtml(p.locationNeedsReview?'Flagged by staff':(p.locationIssue||p.matchMethod||'No map location'))}</span>${p.sourceFilename?`<code title="Source filename">${escapeHtml(p.sourceFilename)}</code>`:`<small>${p.origin==='spreadsheet'?'Spreadsheet imported':'Manually added'}</small>`}</div><div class="review-actions">${!isFiniteNumber(p.lat)||!isFiniteNumber(p.lng)?'<button class="button small" data-action="retry">Retry</button>':''}<button class="button small" data-action="place">Place on map</button><button class="button small" data-action="open">Open</button></div></div>`).join('');
     els.unlocatedList.querySelectorAll('.unlocated-row').forEach(row=>row.addEventListener('click',async e=>{
       const btn=e.target.closest('button'); if (!btn) return; const p=state.permits.find(x=>x.id===row.dataset.id); if (!p) return;
       if (btn.dataset.action==='retry') { btn.disabled=true; const ok=await locatePermit(p,true,false); saveState(); renderAll(); renderUnlocatedList(); if (ok) map.setView([p.lat,p.lng],17); }
@@ -1420,9 +1648,12 @@
     const search=normalizeMatch(els.searchFilter.value); const statuses=new Set([...els.statusFilters.querySelectorAll('input:checked')].map(i=>i.dataset.status));
     const workType=els.workTypeFilter.value, contractor=els.contractorFilter.value;
     return state.permits.filter(p=>{
-      if (!statuses.has(p.status)) return false; if (els.hideClosedFilter.checked&&p.status==='Closed') return false; if (els.hideArchivedFilter.checked&&p.archived) return false;
+      if(recordType(p)==='permit'&&!els.layerPermits.checked)return false;
+      if(recordType(p)==='application'&&!els.layerApplications.checked)return false;
+      if(recordType(p)==='venue'&&!els.layerCustomVenues.checked)return false;
+      if(recordType(p)!=='venue'&&!statuses.has(p.status)) return false; if (recordType(p)!=='venue'&&els.hideClosedFilter.checked&&p.status==='Closed') return false; if (els.hideArchivedFilter.checked&&p.archived) return false;
       if (workType&&p.workType!==workType) return false; if (contractor&&p.contractor!==contractor) return false;
-      if (search) { const hay=normalizeMatch([p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.rowImpact,p.notes,p.sourceFilename].join(' ')); if (!hay.includes(search)) return false; }
+      if (search) { const hay=normalizeMatch([p.recordName,p.recordType,p.sourceStatus,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.rowImpact,p.notes,p.sourceFilename].join(' ')); if (!hay.includes(search)) return false; }
       if (els.corridorOnlyFilter.checked&&!permitNearAnyCorridor(p)) return false; if (els.venueOnlyFilter.checked&&!permitNearAnyVenue(p)) return false;
       return true;
     });
@@ -2077,7 +2308,7 @@
   }
 
   function updateStats() { els.totalCount.textContent=state.permits.length; els.visibleCount.textContent=filteredPermits().filter(p=>isFiniteNumber(p.lat)&&isFiniteNumber(p.lng)).length; els.unlocatedCount.textContent=state.permits.filter(needsLocationReview).length; els.locationReviewCount.textContent=state.permits.filter(needsLocationReview).length; }
-  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(focusLayer,els.layerFocusAreas.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); for (const group of Object.values(ROAD_GROUPS)) toggleLayer(group.layer,els[group.checkbox].checked); }
+  function updateLayerVisibility() { toggleLayer(permitCluster,els.layerPermits.checked||els.layerApplications.checked||els.layerCustomVenues.checked); toggleLayer(venueLayer,els.layerVenues.checked); toggleLayer(venueBuildingLayer,els.layerBuildings.checked); toggleLayer(venueContextLayer,els.layerVenueContext.checked); toggleLayer(corridorLayer,els.layerCorridors.checked); toggleLayer(focusLayer,els.layerFocusAreas.checked); toggleLayer(coneZonesLayer,els.layerConeZones.checked); for (const group of Object.values(ROAD_GROUPS)) toggleLayer(group.layer,els[group.checkbox].checked); }
   function toggleLayer(layer,show) { if (show&&!map.hasLayer(layer)) layer.addTo(map); if (!show&&map.hasLayer(layer)) map.removeLayer(layer); }
 
   function resetFilters() {
@@ -2092,7 +2323,7 @@
   }
 
   function exportBackup() {
-    const payload={ format:'pas-de-deux-backup', version:3, appearance:state.appearance, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors,focusAreas:state.focusAreas,streetNotes:state.streetNotes };
+    const payload={ format:'pas-de-deux-backup', version:4, appearance:state.appearance, exportedAt:new Date().toISOString(), festival:{start:FESTIVAL_START,end:FESTIVAL_END}, permits:state.permits, corridors:state.corridors,focusAreas:state.focusAreas,streetNotes:state.streetNotes };
     downloadBlob(`pas-de-deux-backup-${todayStamp()}.json`,JSON.stringify(payload,null,2),'application/json');
   }
 
@@ -2107,8 +2338,8 @@
   }
 
   function exportCsv() {
-    const headers=['origin','source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
-    const rows=state.permits.map(p=>[p.origin||'imported',p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
+    const headers=['record_type','record_name','origin','source_filename','address_number','street','work_type','contractor','permit_number','status','archived','start_date','end_date','impact_assessment','notes','latitude','longitude','location_method'];
+    const rows=state.permits.map(p=>[recordType(p),p.recordName||'',p.origin||'imported',p.sourceFilename,p.addressNumber,p.street,p.workType,p.contractor,p.permitNumber,p.status,p.archived?'Yes':'No',p.startDate,p.endDate,p.rowImpact,p.notes,p.lat??'',p.lng??'',p.matchMethod]);
     const csv=[headers,...rows].map(row=>row.map(csvCell).join(',')).join('\r\n'); downloadBlob(`pas-de-deux-permits-${todayStamp()}.csv`,csv,'text/csv;charset=utf-8');
   }
 
@@ -2133,7 +2364,7 @@
     updateFolderButton();
     // Disconnect previously authorized import folder, so there is no stale folder to resync.
     await idbDelete('permitFolder');
-    toast(`${removed} permits permanently cleared. The folder was disconnected; corridors and map settings remain.`);
+    toast(`${removed} local pins cleared. The folder was disconnected; corridors and map settings remain.`);
   }
 
   function loadState() {
@@ -2154,6 +2385,8 @@
       if (!STATUS_VALUES.includes(p.status)) p.status='In Review';
       if (typeof p.archived!=='boolean') p.archived=false;
       if(!p.origin)p.origin=p.sourceFilename?'imported':'manual';
+      if(!RECORD_TYPES.includes(p.recordType))p.recordType='permit';
+      if(typeof p.recordName!=='string')p.recordName='';
     }
     for (const c of output.corridors) {
       if (!Array.isArray(c.paths) && Array.isArray(c.latlngs)) c.paths=[c.latlngs];
